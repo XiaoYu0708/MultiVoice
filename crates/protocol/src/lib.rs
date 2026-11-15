@@ -12,7 +12,8 @@ pub mod ticket;
 pub mod voice;
 
 /// 協定版本。不相容的變更就 +1；房主會拒絕版本不同的客戶端。
-pub const PROTOCOL_VERSION: u16 = 2;
+/// v3：房主轉移（Standby、Successors、MigrateTo）
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// iroh 連線的 ALPN。**固定不變**：版本差異由 Hello 的 `protocol_version` 處理，
 /// 這樣舊版客戶端才會收到「請更新」的錯誤訊息，而不是在 TLS 握手就被拒絕。

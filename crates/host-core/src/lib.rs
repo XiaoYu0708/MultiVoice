@@ -10,6 +10,12 @@
 //!
 //! 權限：設定了 [`HostConfig::owner`] 時，只有房主本人（以 NodeId 判斷）能改名／刪除頻道；
 //! 建立頻道所有人都可以。
+//!
+//! 房主轉移（M3，PLAN.md §5）：
+//! - 成員用 `Standby` 告知自己的備用房主端點；房主依 `session_idx`（越早進房越前面）排出候補名單，
+//!   有變動就廣播 `Successors`（房主自己不在名單裡）
+//! - [`Host::migrate`]：計畫性轉移，廣播 `MigrateTo` 給第一候補接手
+//! - 新房主用 [`HostConfig::seed`]（自己客戶端看到的頻道與成員）建立初始狀態，成員重連後 `session_idx` 不變
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -21,8 +27,8 @@ use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use protocol::auth::verify_join_proof;
 use protocol::control::{
-    ChannelInfo, ClientMsg, ErrorCode, HostMsg, MAX_CHANNEL_NAME_CHARS, MAX_CHANNELS, MAX_SLOTS, MemberInfo,
-    Subscription,
+    ChannelInfo, ClientMsg, ErrorCode, HostAddr, HostMsg, MAX_CHANNEL_NAME_CHARS, MAX_CHANNELS, MAX_SLOTS,
+    MemberInfo, Subscription, Successor,
 };
 use protocol::ticket::{RoomId, RoomSecret};
 use protocol::voice::{Kind, VoiceDown, VoiceUp};
@@ -42,6 +48,15 @@ pub struct HostConfig {
     pub max_members: usize,
     /// 房主自己的成員身分（NodeId）。Some 時只有他能改名／刪除頻道；None = 不限制（測試用）
     pub owner: Option<NodeId>,
+    /// 接手時的初始狀態（M3）；None = 新房間
+    pub seed: Option<Seed>,
+}
+
+/// 新房主接手時的初始狀態：頻道（含 ID）與成員的 NodeId → session_idx
+#[derive(Clone, Debug, Default)]
+pub struct Seed {
+    pub channels: Vec<ChannelInfo>,
+    pub members: Vec<(NodeId, SessionIdx)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +73,8 @@ struct Member {
     subs: HashMap<ChannelId, Sub>,
     /// 上一幀語音送給了誰（用來對「不再聽得到」的人補送 end-of-stream）
     last_recipients: Mutex<Vec<SessionIdx>>,
+    /// 備用房主端點（M3）
+    standby: Option<HostAddr>,
 }
 
 struct State {
@@ -67,16 +84,46 @@ struct State {
     next_idx: SessionIdx,
     channels: BTreeMap<ChannelId, String>,
     next_channel: ChannelId,
+    /// 最近一次廣播的候補名單
+    successors: Vec<Successor>,
 }
 
 impl State {
-    fn new() -> Self {
-        Self {
+    fn new(seed: Option<&Seed>) -> Self {
+        let mut st = Self {
             members: HashMap::new(),
             idx_of: HashMap::new(),
             next_idx: 0,
             channels: BTreeMap::from([(DEFAULT_CHANNEL, DEFAULT_CHANNEL_NAME.to_string())]),
             next_channel: DEFAULT_CHANNEL + 1,
+            successors: Vec::new(),
+        };
+        if let Some(seed) = seed {
+            for c in &seed.channels {
+                st.channels.insert(c.id, c.name.clone());
+            }
+            st.channels.entry(DEFAULT_CHANNEL).or_insert_with(|| DEFAULT_CHANNEL_NAME.to_string());
+            st.next_channel = st.channels.keys().max().map_or(DEFAULT_CHANNEL, |&m| m) + 1;
+            for &(node, idx) in &seed.members {
+                st.idx_of.insert(node, idx);
+            }
+            st.next_idx = seed.members.iter().map(|&(_, i)| i).max().map_or(0, |m| m + 1);
+        }
+        st
+    }
+
+    /// 重算候補名單（有備用端點、不是房主本人；越早進房越前面），有變動就廣播
+    fn update_successors(&mut self, owner: Option<NodeId>) {
+        let mut v: Vec<Successor> = self
+            .members
+            .values()
+            .filter(|m| Some(m.info.node_id) != owner)
+            .filter_map(|m| m.standby.clone().map(|host| Successor { session_idx: m.info.session_idx, host }))
+            .collect();
+        v.sort_by_key(|s| s.session_idx);
+        if v != self.successors {
+            self.successors = v.clone();
+            self.broadcast(HostMsg::Successors(v));
         }
     }
 
@@ -125,7 +172,30 @@ pub struct Host {
 
 impl Host {
     pub fn new(cfg: HostConfig) -> Self {
-        Self { cfg: Arc::new(cfg), state: Arc::new(RwLock::new(State::new())), stats: Default::default() }
+        let state = State::new(cfg.seed.as_ref());
+        Self { cfg: Arc::new(cfg), state: Arc::new(RwLock::new(state)), stats: Default::default() }
+    }
+
+    pub fn term(&self) -> u64 {
+        self.cfg.term
+    }
+
+    /// 目前的候補名單
+    pub fn successors(&self) -> Vec<Successor> {
+        self.state.read().unwrap().successors.clone()
+    }
+
+    /// 計畫性轉移：通知所有人由第一候補以 `term + 1` 接手。回傳接手的人（沒有候補時 None，什麼都不做）
+    pub fn migrate(&self) -> Option<Successor> {
+        let st = self.state.read().unwrap();
+        let next = st.successors.first()?.clone();
+        info!("房主轉移給 #{}（任期 {}）", next.session_idx, self.cfg.term + 1);
+        st.broadcast(HostMsg::MigrateTo {
+            session_idx: next.session_idx,
+            host: next.host.clone(),
+            term: self.cfg.term + 1,
+        });
+        Some(next)
     }
 
     pub fn members(&self) -> Vec<MemberInfo> {
@@ -221,8 +291,12 @@ impl Host {
                     ctrl: ctrl_tx.clone(),
                     subs: HashMap::new(),
                     last_recipients: Mutex::new(Vec::new()),
+                    standby: None,
                 },
             );
+            // 新加入的人也要拿到目前的候補名單
+            let _ = ctrl_tx.send(HostMsg::Successors(st.successors.clone()));
+            st.update_successors(self.cfg.owner);
         }
 
         let result = self.serve(&conn, idx, &mut recv, &ctrl_tx).await;
@@ -233,6 +307,7 @@ impl Host {
             if st.members.get(&idx).is_some_and(|m| m.conn.stable_id() == conn.stable_id()) {
                 st.members.remove(&idx);
                 st.broadcast(HostMsg::MemberLeft { session_idx: idx });
+                st.update_successors(self.cfg.owner);
                 info!("成員離開：#{idx} {}", info.display_name);
             }
         }
@@ -415,6 +490,11 @@ impl Host {
                     m.subs.remove(&channel);
                 }
                 st.broadcast(HostMsg::ChannelRemoved { channel });
+            }
+            ClientMsg::Standby(addr) => {
+                let me = st.members.get_mut(&idx).ok_or((ErrorCode::BadMessage, "成員不存在"))?;
+                me.standby = Some(addr);
+                st.update_successors(self.cfg.owner);
             }
             other => {
                 warn!("#{idx} 送了不該在這時送的訊息：{other:?}");

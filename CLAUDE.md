@@ -32,14 +32,14 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 ## 架構（crates/）
 | crate | 用途 |
 |---|---|
-| `protocol` | 協定 v2：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
+| `protocol` | 協定 v3（v3 加房主轉移）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
 | `audio` | cpal 裝置（輸出為**立體聲**交錯）、重取樣（`resample`，非 48 kHz 裝置）、Opus、RNNoise 降噪（含 speech mix）、`list_devices` |
 | `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking） |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
-| `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音 |
+| `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音、換房主時換連線（`reconnect`）、失聯偵測 |
 | `hotkeys` | 全域按鍵：LL hook（不攔截）、按鍵解析、錄製模式（只在 Windows 有作用） |
-| `session` | 建房／加入（async）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
+| `session` | 建房／加入（async）+ 房主轉移流程（`takeover.rs`）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
 | `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
@@ -52,7 +52,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 不做置頂「誰在說話」小視窗（做過後移除）
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 50 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 53 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率

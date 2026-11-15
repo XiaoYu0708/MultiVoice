@@ -11,6 +11,8 @@
 //!
 //! 槽位由成員決定，所以不需要等房主回覆就能開始說話，也沒有登記訊息與語音封包的先後問題。
 
+use std::net::SocketAddr;
+
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{Nonce, Proof};
@@ -48,6 +50,21 @@ pub struct Subscription {
     pub talk: bool,
 }
 
+/// 一個 iroh 端點的位址（M3：備用房主端點）。protocol 不依賴 iroh，所以 relay 用字串。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAddr {
+    pub id: NodeId,
+    pub addrs: Vec<SocketAddr>,
+    pub relay: Option<String>,
+}
+
+/// 房主候補（M3）：成員與他的備用房主端點
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Successor {
+    pub session_idx: SessionIdx,
+    pub host: HostAddr,
+}
+
 /// 成員 → 房主
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMsg {
@@ -64,6 +81,8 @@ pub enum ClientMsg {
     CreateChannel { name: String },
     RenameChannel { channel: ChannelId, name: String },
     DeleteChannel { channel: ChannelId },
+    /// 我可以當房主：這是我預先建好的備用房主端點（M3）
+    Standby(HostAddr),
 }
 
 /// 房主 → 成員
@@ -90,6 +109,10 @@ pub enum HostMsg {
     ChannelRenamed { channel: ChannelId, name: String },
     /// 有人進出頻道或改變收聽／說話狀態（含自己，作為確認）
     SubscriptionChanged(Subscription),
+    /// 房主候補名單，依接手順序（M3）。房主失聯時成員依序找他們
+    Successors(Vec<Successor>),
+    /// 計畫性轉移（房主要離開）：`session_idx` 這位成員以任期 `term` 接手，其他人改連 `host`（M3）
+    MigrateTo { session_idx: SessionIdx, host: HostAddr, term: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

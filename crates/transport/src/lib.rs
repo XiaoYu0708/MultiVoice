@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use iroh::endpoint::{RecvStream, SendStream, presets};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr};
 use protocol::NodeId;
-use protocol::control::{decode_body, encode_frame, frame_len};
+use protocol::control::{HostAddr, decode_body, encode_frame, frame_len};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -54,6 +54,28 @@ pub fn loopback_addr(ep: &Endpoint) -> EndpointAddr {
         TransportAddr::Ip(SocketAddr::new(ip, a.port()))
     });
     EndpointAddr::from_parts(ep.id(), addrs)
+}
+
+/// 端點目前的位址（直連位址、relay、本機 loopback）→ 可以傳給其他成員的 [`HostAddr`]。
+/// 加上 loopback 是為了關閉 relay 的本機測試；遠端撥到 loopback 只會失敗（iroh 會驗證 NodeId，不會連錯人）。
+pub fn host_addr(ep: &Endpoint) -> HostAddr {
+    let a = ep.addr();
+    let mut addrs: Vec<SocketAddr> = a.ip_addrs().copied().collect();
+    for t in loopback_addr(ep).addrs {
+        if let TransportAddr::Ip(s) = t
+            && !addrs.contains(&s)
+        {
+            addrs.push(s);
+        }
+    }
+    HostAddr { id: node_id(&ep.id()), addrs, relay: a.relay_urls().next().map(|u| u.to_string()) }
+}
+
+/// [`HostAddr`] → 可以撥號的 `EndpointAddr`
+pub fn endpoint_addr(h: &HostAddr) -> Result<EndpointAddr> {
+    let relay = h.relay.as_deref().and_then(|u| u.parse::<RelayUrl>().ok()).map(TransportAddr::Relay);
+    let ips = h.addrs.iter().copied().map(TransportAddr::Ip);
+    Ok(EndpointAddr::from_parts(endpoint_id(&h.id)?, ips.chain(relay)))
 }
 
 pub fn node_id(id: &EndpointId) -> NodeId {

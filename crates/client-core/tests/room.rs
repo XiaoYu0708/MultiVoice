@@ -36,7 +36,7 @@ async fn start_room_owned(owner: Option<NodeId>) -> Result<Room> {
         secret: RoomSecret(transport::random_bytes()),
         bootstrap: vec![transport::node_id(&host_ep.id())],
     };
-    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner });
+    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner, seed: None });
     tokio::spawn({
         let host = host.clone();
         let ep = host_ep.clone();

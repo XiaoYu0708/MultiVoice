@@ -9,6 +9,7 @@
 
 pub mod identity;
 pub mod pipeline;
+pub mod takeover;
 pub mod talk;
 
 use std::collections::{HashMap, VecDeque};
@@ -36,7 +37,10 @@ pub struct Connected {
     events: UnboundedReceiver<ClientEvent>,
     endpoints: Vec<Endpoint>,
     host: Option<Host>,
-    ticket: Ticket,
+    /// 備用房主端點（M3；加入別人的房間時才有）
+    standby: Option<Endpoint>,
+    /// 備用端點要等連上 relay 才宣告
+    wait_online: bool,
     name: String,
 }
 
@@ -52,7 +56,7 @@ pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<
         secret: RoomSecret(transport::random_bytes()),
         bootstrap: vec![transport::node_id(&host_ep.id())],
     };
-    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner: Some(owner) });
+    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner: Some(owner), seed: None });
     tokio::spawn({
         let (host, ep) = (host.clone(), host_ep.clone());
         async move { host.run(ep).await }
@@ -63,15 +67,30 @@ pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<
     }
     let ep = transport::bind(key, relays, false).await?;
     let (client, events) = Client::join_addr(&ep, transport::loopback_addr(&host_ep), &ticket, name).await?;
-    Ok(Connected { client, events, endpoints: vec![ep, host_ep], host: Some(host), ticket, name: name.into() })
+    Ok(Connected {
+        client,
+        events,
+        endpoints: vec![ep, host_ep],
+        host: Some(host),
+        standby: None,
+        wait_online: false,
+        name: name.into(),
+    })
 }
 
 pub async fn join_room(ticket: &str, profile: &str, name: &str, relays: RelaySetup) -> Result<Connected> {
     let ticket: Ticket = ticket.parse().context("邀請票無效")?;
     let key = identity::load_or_create(profile)?;
-    let ep = transport::bind(key, relays, false).await?;
+    let wait_online = !matches!(relays, RelaySetup::Disabled);
+    let ep = transport::bind(key, relays.clone(), false).await?;
     match Client::join(&ep, &ticket, name).await {
-        Ok((client, events)) => Ok(Connected { client, events, endpoints: vec![ep], host: None, ticket, name: name.into() }),
+        Ok((client, events)) => {
+            // 備用房主端點（房主離開或失聯時可能由我接手）；建不起來也不影響加入
+            let standby = transport::bind(transport::generate_secret(), relays, true).await.ok();
+            let mut endpoints = vec![ep];
+            endpoints.extend(standby.clone());
+            Ok(Connected { client, events, endpoints, host: None, standby, wait_online, name: name.into() })
+        }
         Err(e) => {
             ep.close().await;
             Err(e)
@@ -115,6 +134,8 @@ pub struct Snapshot {
     /// 目前正在送出聲音的頻道名稱
     pub talking_to: Vec<String>,
     pub is_host: bool,
+    /// 正在找新房主（房主離開或失聯）
+    pub reconnecting: bool,
     pub ticket: String,
     /// 實際上沒有送出聲音（自己靜音，或拒聽中）
     pub muted: bool,
@@ -142,9 +163,19 @@ struct RoomState {
     ping: Option<f64>,
     log: VecDeque<String>,
     disconnected: Option<String>,
+    /// 換房主期間大家陸續重連，這段時間不記「某某加入／離開了」
+    quiet_until: Option<std::time::Instant>,
 }
 
 impl RoomState {
+    fn quiet(&self) -> bool {
+        self.quiet_until.is_some_and(|t| std::time::Instant::now() < t)
+    }
+
+    fn hush(&mut self) {
+        self.quiet_until = Some(std::time::Instant::now() + Duration::from_secs(8));
+    }
+
     fn push_log(&mut self, s: String) {
         self.log.push_back(s);
         while self.log.len() > 50 {
@@ -159,8 +190,8 @@ pub struct Session {
     shared: Arc<Shared>,
     audio: Option<pipeline::AudioHandle>,
     endpoints: Vec<Endpoint>,
-    host: Option<Host>,
-    ticket: Ticket,
+    /// 換房主的流程，也記著「我現在是不是房主」
+    takeover: Arc<takeover::Takeover>,
     name: String,
     room: Arc<Mutex<RoomState>>,
     /// 目前套用中的音訊設定
@@ -200,20 +231,50 @@ impl Session {
                 r.push_log(format!("全域按鍵無法使用：{e}"));
             }
         }
+        let log: takeover::Log = {
+            let room = room.clone();
+            Arc::new(move |s| room.lock().unwrap().push_log(s))
+        };
+        let takeover = takeover::Takeover::new(c.client.clone(), c.standby, c.host, log);
+        {
+            let _guard = rt.enter();
+            takeover.start_standby(c.wait_online);
+        }
         let mut events = c.events;
-        let (room2, shared2, client2) = (room.clone(), shared.clone(), c.client.clone());
+        let (room2, shared2, client2, takeover2) = (room.clone(), shared.clone(), c.client.clone(), takeover.clone());
         rt.spawn(async move {
             while let Some(ev) = events.recv().await {
                 let mut r = room2.lock().unwrap();
                 match ev {
                     ClientEvent::MemberJoined(m) => {
-                        r.push_log(format!("{} 加入了", m.display_name));
+                        if !r.quiet() {
+                            r.push_log(format!("{} 加入了", m.display_name));
+                        }
                         r.names.insert(m.session_idx, m.display_name);
                     }
                     ClientEvent::MemberLeft(i) => {
                         let name = r.names.get(&i).cloned().unwrap_or_else(|| format!("#{i}"));
-                        r.push_log(format!("{name} 離開了"));
+                        if !r.quiet() {
+                            r.push_log(format!("{name} 離開了"));
+                        }
                         shared2.forget(i);
+                    }
+                    ClientEvent::MigrateTo { session_idx, host, term } => {
+                        r.hush();
+                        tokio::spawn(takeover2.clone().on_migrate(session_idx, host, term));
+                    }
+                    ClientEvent::HostLost(_) => {
+                        r.hush();
+                        tokio::spawn(takeover2.clone().on_host_lost());
+                    }
+                    ClientEvent::Reconnected { .. } => {
+                        r.hush();
+                        r.channel_names = client2.channels().into_iter().map(|ch| (ch.id, ch.name)).collect();
+                        for m in client2.members() {
+                            r.names.insert(m.session_idx, m.display_name);
+                        }
+                        // 換房主時頻道可能有變：重算槽位與說話遮罩
+                        shared2.rebuild(&client2.my_slots());
                     }
                     ClientEvent::ChannelAdded(ch) => {
                         r.push_log(format!("新增頻道「{}」", ch.name));
@@ -246,8 +307,7 @@ impl Session {
             shared,
             audio: Some(handle),
             endpoints: c.endpoints,
-            host: c.host,
-            ticket: c.ticket,
+            takeover,
             name: c.name,
             room,
             opts: audio.clone(),
@@ -351,8 +411,9 @@ impl Session {
             members,
             channels,
             talking_to: talking_to.iter().filter_map(|c| channel_names.get(c).cloned()).collect(),
-            is_host: self.host.is_some(),
-            ticket: self.ticket.to_string(),
+            is_host: self.takeover.host().is_some(),
+            reconnecting: self.takeover.recovering(),
+            ticket: self.ticket().to_string(),
             muted: self.shared.is_muted(),
             deafened: self.shared.is_deafened(),
             tx_active,
@@ -365,6 +426,24 @@ impl Session {
             log: r.log.iter().cloned().collect(),
             disconnected: r.disconnected.clone(),
         }
+    }
+
+    /// 目前的邀請票：現任房主在最前面，後面是候補的備用端點（房主換人後舊票也比較可能還能用）
+    pub fn ticket(&self) -> Ticket {
+        let t = self.client.ticket();
+        let mut bootstrap = vec![self.client.host_id()];
+        for s in self.client.successors() {
+            if !bootstrap.contains(&s.host.id) {
+                bootstrap.push(s.host.id);
+            }
+        }
+        for n in &t.bootstrap {
+            if !bootstrap.contains(n) {
+                bootstrap.push(*n);
+            }
+        }
+        bootstrap.truncate(6);
+        Ticket { room_id: t.room_id, secret: t.secret, bootstrap }
     }
 
     /// 跨執行緒共用的即時狀態（系統匣執行緒讀取說話／靜音狀態、切換靜音用）
@@ -420,10 +499,15 @@ impl Session {
         self.audio.take();
         let client = self.client.clone();
         let endpoints = std::mem::take(&mut self.endpoints);
-        let host = self.host.take();
+        let host = self.takeover.host();
         async move {
             client.leave().await;
-            drop(host);
+            // 我是房主：先交給第一候補，等大家收到通知再關（PLAN §5.2）
+            if let Some(h) = host
+                && h.migrate().is_some()
+            {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+            }
             for ep in endpoints {
                 ep.close().await;
             }

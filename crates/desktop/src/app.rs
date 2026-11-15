@@ -353,7 +353,10 @@ impl App {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 // 不用 emoji：系統中文字型沒有 emoji，會顯示成方框
-                if snap.is_host {
+                if snap.reconnecting {
+                    ui.spinner();
+                    ui.label(RichText::new("正在找新房主…").strong().color(AMBER));
+                } else if snap.is_host {
                     ui.label(RichText::new("你是房主").strong().color(AMBER));
                 } else {
                     ui.label(RichText::new("已加入房間").strong());

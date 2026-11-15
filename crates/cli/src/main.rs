@@ -173,8 +173,15 @@ fn print_status(s: &Snapshot) {
     };
     let me = if s.muted { "🔇" } else if s.tx_active { "🎤送出中" } else { "🎤" };
     let j = &s.jitter;
+    let role = if s.reconnecting {
+        "找新房主中｜"
+    } else if s.is_host {
+        "房主｜"
+    } else {
+        ""
+    };
     println!(
-        "{me}｜成員 {}｜說話中：{}｜{path}｜ping {}｜緩衝 {}｜FEC {} PLC {} 跳過 {} 遲到 {}｜欠載 {}",
+        "{role}{me}｜成員 {}｜說話中：{}｜{path}｜ping {}｜緩衝 {}｜FEC {} PLC {} 跳過 {} 遲到 {}｜欠載 {}",
         s.members.len() + 1,
         if speaking.is_empty() { "—".into() } else { speaking.join("、") },
         s.ping.map(|p| format!("{p:.0}ms")).unwrap_or_else(|| "—".into()),
