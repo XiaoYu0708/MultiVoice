@@ -25,6 +25,8 @@ pub struct App {
     /// 測試用：啟動後自動建房／加入
     auto: Option<Auto>,
     start_deafened: bool,
+    /// 目前套用到工作階段的音訊設定（用來偵測使用者在房間裡改了設定）
+    applied: Option<session::AudioOpts>,
 }
 
 enum Auto {
@@ -63,6 +65,7 @@ impl App {
             inputs: audio::device::list_devices(true),
             outputs: audio::device::list_devices(false),
             copied_at: None,
+            applied: None,
         }
     }
 
@@ -103,6 +106,7 @@ impl App {
                     s.set_deafened(true);
                 }
                 self.session = Some(s);
+                self.applied = Some(self.settings.audio_opts());
             }
             Err(e) => self.error = Some(format!("{e:#}")),
         }
@@ -245,7 +249,7 @@ impl App {
 
         ui.add_space(6.0);
         ui.label(RichText::new(format!("成員（{}）", snap.members.len() + 1)).strong());
-        egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(ui.available_height() - 40.0).show(ui, |ui| {
+        ui.vertical(|ui| {
             if snap.members.is_empty() {
                 ui.weak("目前只有你。複製邀請票給朋友吧。");
             }
@@ -262,6 +266,30 @@ impl App {
             ui.add_space(6.0);
             ui.colored_label(RED, format!("連線中斷：{why}"));
         }
+
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new("語音設定").default_open(false).show(ui, |ui| {
+            ui.add(egui::Slider::new(&mut self.settings.output_volume, 0.0..=2.0).text("輸出音量"));
+            ui.add_space(4.0);
+            self.audio_settings(ui);
+        });
+        // 設定有變就套用：開麥方式、降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
+        let opts = self.settings.audio_opts();
+        if self.applied.as_ref() != Some(&opts) {
+            if let Some(s) = self.session.as_mut() {
+                self.error = s.apply_audio(&opts).err().map(|e| format!("{e:#}"));
+                // 失敗時 session 已退回原本的裝置；把畫面上的選擇也改回去，避免每一幀重試
+                if self.error.is_some() {
+                    self.settings.input_device = self.applied.as_ref().and_then(|o| o.input.clone());
+                    self.settings.output_device = self.applied.as_ref().and_then(|o| o.output.clone());
+                }
+            }
+            self.applied = Some(self.settings.audio_opts());
+        }
+        if let Some(e) = &self.error {
+            ui.colored_label(RED, e);
+        }
+
         egui::CollapsingHeader::new("最近事件").default_open(false).show(ui, |ui| {
             for line in snap.log.iter().rev().take(10) {
                 ui.weak(line);
@@ -345,10 +373,10 @@ impl eframe::App for App {
                 }
             });
             ui.separator();
-            match &snap {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match &snap {
                 Some(snap) => self.room(ui, snap),
                 None => self.lobby(ui),
-            }
+            });
         });
 
         if self.session.is_some() || self.pending.is_some() {

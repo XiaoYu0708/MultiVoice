@@ -132,6 +132,8 @@ pub struct Session {
     ticket: Ticket,
     name: String,
     room: Arc<Mutex<RoomState>>,
+    /// 目前套用中的音訊設定
+    opts: AudioOpts,
     pub input_name: String,
     pub output_name: String,
 }
@@ -140,7 +142,7 @@ impl Session {
     /// 啟動音訊，並在 `rt` 上開一個 task 處理控制事件
     pub fn start(c: Connected, audio: &AudioOpts, rt: &tokio::runtime::Handle) -> Result<Session> {
         let shared = Arc::new(Shared::new());
-        let handle = match pipeline::start(c.client.clone(), shared.clone(), audio, rt) {
+        let handle = match pipeline::start(c.client.clone(), shared.clone(), audio) {
             Ok(h) => h,
             Err(e) => {
                 // 音訊裝置打不開：離開房間、關閉端點，不留下半套連線
@@ -154,6 +156,7 @@ impl Session {
                 return Err(e);
             }
         };
+        pipeline::spawn_receive(c.client.clone(), shared.clone(), rt);
         let room = Arc::new(Mutex::new(RoomState::default()));
         {
             let mut r = room.lock().unwrap();
@@ -194,6 +197,7 @@ impl Session {
             ticket: c.ticket,
             name: c.name,
             room,
+            opts: audio.clone(),
         })
     }
 
@@ -233,6 +237,39 @@ impl Session {
 
     pub fn set_deafened(&self, v: bool) {
         self.shared.deafened.store(v, Ordering::Relaxed);
+    }
+
+    /// 進房後調整音訊設定。開麥方式、降噪、音量立即生效；換了裝置則重啟音訊（連線不中斷）。
+    /// 新裝置開不起來時退回原本的裝置，並回傳錯誤。
+    pub fn apply_audio(&mut self, new: &AudioOpts) -> Result<()> {
+        self.shared.apply(new);
+        let devices_changed = new.input != self.opts.input || new.output != self.opts.output;
+        if !devices_changed {
+            self.opts = new.clone();
+            return Ok(());
+        }
+        // 先停掉舊的（等執行緒結束），避免兩組擷取執行緒同時送出
+        self.audio.take();
+        match pipeline::start(self.client.clone(), self.shared.clone(), new) {
+            Ok(h) => {
+                self.input_name = h.input_name.clone();
+                self.output_name = h.output_name.clone();
+                self.audio = Some(h);
+                self.opts = new.clone();
+                self.room.lock().unwrap().push_log("已切換音訊裝置".into());
+                Ok(())
+            }
+            Err(e) => {
+                let mut old = self.opts.clone();
+                // 保留新的即時設定，只退回裝置
+                (old.open_mic, old.denoise, old.mix, old.volume) = (new.open_mic, new.denoise, new.mix, new.volume);
+                if let Ok(h) = pipeline::start(self.client.clone(), self.shared.clone(), &old) {
+                    self.audio = Some(h);
+                    self.opts = old;
+                }
+                Err(e.context("無法開啟新的音訊裝置，已改回原本的裝置"))
+            }
+        }
     }
 
     /// 停止音訊（在目前執行緒），回傳一個可以丟到 tokio 上執行的離開流程

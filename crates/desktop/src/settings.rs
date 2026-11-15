@@ -16,6 +16,8 @@ pub struct Settings {
     pub denoise: bool,
     /// 降噪時人聲混回原音的比例
     pub speech_mix: f32,
+    /// 輸出音量（1.0 = 原音量）
+    pub output_volume: f32,
     /// 最近一次使用的邀請票（方便重新加入）
     pub last_ticket: String,
 }
@@ -29,6 +31,7 @@ impl Default for Settings {
             open_mic: false,
             denoise: true,
             speech_mix: 0.3,
+            output_volume: 1.0,
             last_ticket: String::new(),
         }
     }
@@ -65,6 +68,7 @@ impl Settings {
             open_mic: self.open_mic,
             denoise: self.denoise,
             mix: self.speech_mix,
+            volume: self.output_volume,
             ..Default::default()
         }
     }
