@@ -3,3 +3,4 @@
 pub mod codec;
 pub mod denoise;
 pub mod device;
+pub mod resample;

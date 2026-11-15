@@ -119,10 +119,12 @@ fn main() -> Result<(), device::Error> {
         let _ = out_prod.push(0.0);
     }
 
+    device::check_rate(device::default_rate(&in_dev, true)?)?;
+    device::check_rate(device::default_rate(&out_dev, false)?)?;
     let (_in_stream, in_ch) = device::open_input(
-        &in_dev, in_prod, in_stats.clone(), Some(OnsetDetector::new(in_onset_tx)))?;
+        &in_dev, in_prod, in_stats.clone(), Some(OnsetDetector::new(in_onset_tx)), None)?;
     let (_out_stream, out_ch) = device::open_output(
-        &out_dev, out_cons, out_stats.clone(), Some(OnsetDetector::new(out_onset_tx)), o.gain)?;
+        &out_dev, out_cons, out_stats.clone(), Some(OnsetDetector::new(out_onset_tx)), o.gain, None)?;
 
     // audiopus_sys 以 cmake 編譯時沒有帶入版本字串，會顯示 "libopus unknown"（實際為內附的 1.3.1）
     if !opus::version().contains("unknown") {

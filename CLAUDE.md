@@ -33,7 +33,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | crate | 用途 |
 |---|---|
 | `protocol` | 協定 v2：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
-| `audio` | cpal 裝置（輸出為**立體聲**交錯）、Opus、RNNoise 降噪（含 speech mix）、`list_devices` |
+| `audio` | cpal 裝置（輸出為**立體聲**交錯）、重取樣（`resample`，非 48 kHz 裝置）、Opus、RNNoise 降噪（含 speech mix）、`list_devices` |
 | `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking） |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
@@ -52,8 +52,10 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 不做置頂「誰在說話」小視窗（做過後移除）
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 47 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 49 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
+- 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
+  輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率
 - 端對端煙霧測試：背景跑 `multivoice-cli host --open-mic --volume 0 --seconds N`，從輸出抓 `mv1…` 邀請票，再跑 `multivoice-cli join <票> --profile 別的名稱 …`
 - **UI 驗證**：`tools/shot.ps1` 會啟動桌面版、用 PrintWindow 截圖（不怕被其他視窗蓋住），再用 Read 看圖：
   ```bash

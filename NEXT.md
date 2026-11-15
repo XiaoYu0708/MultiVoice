@@ -75,7 +75,10 @@
 注意：M2 加了頻道與訂閱，狀態複製要包含頻道列表；各成員的訂閱由成員自己在換房主後重送（`Resume`）。
 
 ## 4. M5：音質與穩定性
-- [ ] **重取樣**：目前非 48 kHz 的裝置會直接報錯（`audio::device::check_rate`）。用 rubato 5 `Async::new_poly`
+- [x] **重取樣**（2026-11-15）：`audio::resample::Resampler`（rubato 5 `Async::new_poly` Septic，10 ms 一塊，同取樣率直接傳過）；
+  環形緩衝裡是裝置取樣率，擷取執行緒轉成 48 kHz、播放執行緒轉成裝置取樣率（回呼內不做）。
+  測試：單元測試（44.1↔48、96→48 的長度／頻率／振幅）；`MULTIVOICE_TEST_RATES=44100,44100` 強制開裝置的端對端測試
+  （輸入 44.1k＋輸出 44.1k、輸出 22.05k、輸出 96k 都沒有欠載、沒有 PLC）。`cargo run -p audio --example rates` 列出各裝置取樣率
 - [ ] 斷線自動重連並恢復訂閱；裝置熱插拔
 - [ ] AGC、麥克風測試介面（顯示原始／降噪後音量、底噪頻段分析，見 `audio/examples/mic_probe.rs`）
 - [ ] 評估 libopus 1.5（Deep PLC / DRED）、IAudioClient3 低延遲、DeepFilterNet

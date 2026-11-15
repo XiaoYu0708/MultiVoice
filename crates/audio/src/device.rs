@@ -5,7 +5,8 @@
 //!   多於兩聲道時前兩個放左右、其餘放平均。不足時補靜音並計一次欠載
 //! - 回呼內不配置記憶體、不上鎖、不印 log；統計值一律走 atomic
 //!
-//! 目前只支援 48 kHz 的裝置（與 Opus 一致）。其他取樣率會回傳錯誤，重取樣之後再加。
+//! 串流用裝置的預設取樣率開啟（[`default_rate`]）；不是 48 kHz 時由呼叫端用 [`crate::resample`] 轉換。
+//! `OnsetDetector` 與延遲量測工具假設 48 kHz（examples 開啟前會用 [`check_rate`] 檢查）。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -144,24 +145,35 @@ pub fn device_name(d: &cpal::Device) -> String {
     d.description().map(|x| x.to_string()).unwrap_or_else(|_| "(未知裝置)".into())
 }
 
-fn check_rate(rate: u32) -> Result<(), Error> {
+/// 裝置預設的取樣率（[`open_input`] / [`open_output`] 會用這個取樣率開啟）
+pub fn default_rate(dev: &cpal::Device, input: bool) -> Result<u32, Error> {
+    let c = if input { dev.default_input_config()? } else { dev.default_output_config()? };
+    Ok(c.sample_rate())
+}
+
+/// 只接受 48 kHz（延遲量測等 examples 用；正式管線會重取樣）
+pub fn check_rate(rate: u32) -> Result<(), Error> {
     if rate == SAMPLE_RATE {
         Ok(())
     } else {
-        Err(format!("裝置取樣率為 {rate} Hz，目前只支援 {SAMPLE_RATE} Hz（重取樣尚未實作）").into())
+        Err(format!("裝置取樣率為 {rate} Hz，這個工具只支援 {SAMPLE_RATE} Hz").into())
     }
 }
 
 /// 開啟輸入串流。回傳的 `cpal::Stream` 被 drop 時串流就會停止。
+/// `rate`：None = 裝置預設取樣率；指定時裝置必須原生支援（測試用）
 pub fn open_input(
     dev: &cpal::Device,
     ring: rtrb::Producer<f32>,
     stats: Arc<StreamStats>,
     onset: Option<OnsetDetector>,
+    rate: Option<u32>,
 ) -> Result<(cpal::Stream, u16), Error> {
     let sc = dev.default_input_config()?;
-    check_rate(sc.sample_rate())?;
-    let config: StreamConfig = sc.config();
+    let mut config: StreamConfig = sc.config();
+    if let Some(r) = rate {
+        config.sample_rate = r;
+    }
     let ch = config.channels;
     let stream = match sc.sample_format() {
         SampleFormat::F32 => build_input::<f32>(dev, &config, ring, stats, onset)?,
@@ -229,16 +241,20 @@ fn error_handler(stats: Arc<StreamStats>, label: &'static str) -> impl FnMut(cpa
 }
 
 /// 開啟輸出串流。`ring` 內為左右交錯的立體聲。`gain` 為輸出增益（0 = 靜音，用於不出聲的自動測試）。
+/// `rate`：None = 裝置預設取樣率；指定時由 Windows 轉換（WASAPI AUTOCONVERTPCM，測試用）
 pub fn open_output(
     dev: &cpal::Device,
     ring: rtrb::Consumer<f32>,
     stats: Arc<StreamStats>,
     onset: Option<OnsetDetector>,
     gain: f32,
+    rate: Option<u32>,
 ) -> Result<(cpal::Stream, u16), Error> {
     let sc = dev.default_output_config()?;
-    check_rate(sc.sample_rate())?;
-    let config: StreamConfig = sc.config();
+    let mut config: StreamConfig = sc.config();
+    if let Some(r) = rate {
+        config.sample_rate = r;
+    }
     let ch = config.channels;
     let stream = match sc.sample_format() {
         SampleFormat::F32 => build_output::<f32>(dev, &config, ring, stats, onset, gain)?,

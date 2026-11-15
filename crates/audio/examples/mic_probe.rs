@@ -36,7 +36,8 @@ fn main() -> Result<(), device::Error> {
     let dev = device::find_device(true, None)?;
     let (prod, mut cons) = rtrb::RingBuffer::<f32>::new(SAMPLE_RATE as usize);
     let stats = Arc::new(StreamStats::default());
-    let (_s, _) = device::open_input(&dev, prod, stats, None)?;
+    device::check_rate(device::default_rate(&dev, true)?)?;
+    let (_s, _) = device::open_input(&dev, prod, stats, None, None)?;
     println!("錄音 {secs} 秒：{}（請保持安靜）", device::device_name(&dev));
 
     // 頻段：< 250 Hz（風扇、冷氣、桌面震動）、250–4000 Hz（人聲主要頻段）、> 4000 Hz（嘶聲）

@@ -23,6 +23,7 @@ use anyhow::Result;
 use audio::codec::{Decoder, Encoder, FRAME_SAMPLES, MAX_PACKET, SAMPLE_RATE};
 use audio::denoise::Denoiser;
 use audio::device::{self, StreamStats};
+use audio::resample::Resampler;
 use client_core::{Client, VoiceDown};
 use mixer_core::jitter::{JitterBuffer, Pull};
 use mixer_core::mix::{mix_into_stereo, soft_clip};
@@ -362,21 +363,39 @@ pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<Audio
     let in_dev = device::find_device(true, o.input.as_deref()).map_err(anyhow::Error::from_boxed)?;
     let out_dev = device::find_device(false, o.output.as_deref()).map_err(anyhow::Error::from_boxed)?;
 
-    let cap = SAMPLE_RATE as usize / 5; // 200 ms
-    let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(cap);
+    // 裝置的取樣率不一定是 48 kHz（例如 44.1 kHz 耳機）：環形緩衝裡是裝置取樣率，
+    // 擷取／播放執行緒負責轉換
+    // 測試用：MULTIVOICE_TEST_RATES=輸入,輸出（例如 44100,44100）強制用其他取樣率開裝置，
+    // 在只有 48 kHz 裝置的電腦上也能跑重取樣路徑（輸出由 Windows 轉換；輸入要裝置原生支援）
+    let forced: Vec<u32> = std::env::var("MULTIVOICE_TEST_RATES")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default();
+    let (force_in, force_out) = (forced.first().copied(), forced.get(1).copied());
+    let in_rate = match force_in {
+        Some(r) => r,
+        None => device::default_rate(&in_dev, true).map_err(anyhow::Error::from_boxed)?,
+    };
+    let out_rate = match force_out {
+        Some(r) => r,
+        None => device::default_rate(&out_dev, false).map_err(anyhow::Error::from_boxed)?,
+    };
+    let in_cap = in_rate.max(SAMPLE_RATE) as usize / 5; // 200 ms
+    let out_cap = out_rate.max(SAMPLE_RATE) as usize / 5;
+    let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(in_cap);
     // 輸出為左右交錯的立體聲
-    let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(cap * 2);
+    let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(out_cap * 2);
 
-    let (in_stream, _) = device::open_input(&in_dev, in_prod, Arc::new(StreamStats::default()), None)
+    let (in_stream, _) = device::open_input(&in_dev, in_prod, Arc::new(StreamStats::default()), None, force_in)
         .map_err(anyhow::Error::from_boxed)?;
-    let (out_stream, _) = device::open_output(&out_dev, out_cons, shared.out_stats.clone(), None, 1.0)
+    let (out_stream, _) = device::open_output(&out_dev, out_cons, shared.out_stats.clone(), None, 1.0, force_out)
         .map_err(anyhow::Error::from_boxed)?;
 
     shared.apply(o);
     let stop = Arc::new(AtomicBool::new(false));
     let threads = vec![
-        spawn_capture(client, shared.clone(), stop.clone(), in_cons, o.bitrate)?,
-        spawn_playback(shared, stop.clone(), out_prod, cap, o.buffer_ms)?,
+        spawn_capture(client, shared.clone(), stop.clone(), in_cons, o.bitrate, in_rate)?,
+        spawn_playback(shared, stop.clone(), out_prod, out_cap, o.buffer_ms, out_rate)?,
     ];
 
     Ok(AudioHandle {
@@ -394,8 +413,10 @@ fn spawn_capture(
     stop: Arc<AtomicBool>,
     mut ring: rtrb::Consumer<f32>,
     bitrate: i32,
+    in_rate: u32,
 ) -> Result<JoinHandle<()>> {
     let mut enc = Encoder::new(bitrate)?;
+    let mut rs = Resampler::new(in_rate, SAMPLE_RATE, 1).map_err(anyhow::Error::from_boxed)?;
     let mut denoiser = Denoiser::new();
     let h = std::thread::Builder::new().name("capture".into()).spawn(move || {
         let mut frame = Vec::with_capacity(FRAME_SAMPLES);
@@ -407,8 +428,16 @@ fn spawn_capture(
         let mut prev_ptt = 0u64;
         let mut prev_muted = shared.is_muted();
         let running = || !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed);
+        let (mut raw, mut res) = (Vec::with_capacity(4096), Vec::with_capacity(4096));
         while running() {
+            // 裝置取樣率 → 48 kHz
+            raw.clear();
             while let Ok(s) = ring.pop() {
+                raw.push(s);
+            }
+            res.clear();
+            rs.process(&raw, &mut res);
+            for &s in &res {
                 frame.push(s);
                 if frame.len() < FRAME_SAMPLES {
                     continue;
@@ -515,15 +544,19 @@ fn spawn_playback(
     mut out: rtrb::Producer<f32>,
     cap: usize,
     buffer_ms: u32,
+    out_rate: u32,
 ) -> Result<JoinHandle<()>> {
-    // 以「幀」（左右一對）為單位
-    let target = (SAMPLE_RATE * buffer_ms / 1000) as usize;
+    // 以「幀」（左右一對）為單位，裝置取樣率
+    let target = (out_rate * buffer_ms / 1000) as usize;
+    // 混音是 48 kHz 立體聲 → 裝置取樣率
+    let mut rs = Resampler::new(SAMPLE_RATE, out_rate, 2).map_err(anyhow::Error::from_boxed)?;
     let h = std::thread::Builder::new().name("playback".into()).spawn(move || {
         let mut decoders: HashMap<SessionIdx, Decoder> = HashMap::new();
         let mut voices: HashMap<SessionIdx, Vec<f32>> = HashMap::new();
         let mut routed: Vec<(SessionIdx, Route)> = Vec::new();
         let mut mix = vec![0f32; FRAME_SAMPLES * 2];
         let mut tones = TonePlayer::default();
+        let mut res: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
         let mut warmed = false;
         while !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
             if (cap * 2 - out.slots()) / 2 >= target {
@@ -592,7 +625,9 @@ fn spawn_playback(
             }
             tones.mix_into(&mut mix, vol);
             soft_clip(&mut mix);
-            for &s in &mix {
+            res.clear();
+            rs.process(&mix, &mut res);
+            for &s in &res {
                 let _ = out.push(s);
             }
             if !warmed {
