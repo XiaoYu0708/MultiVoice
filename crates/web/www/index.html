@@ -68,6 +68,12 @@
     </div>
     <div class="meter" aria-hidden="true"><div id="meter-fill"></div><div id="meter-gate"></div></div>
     <p id="mic-text" class="muted small">麥克風：—</p>
+    <div id="pip-row" class="pip-row" hidden>
+      <button id="pip-btn" class="ghost" type="button">浮動視窗（實驗）</button>
+      <video id="pip-video" muted playsinline autopictureinpicture></video>
+    </div>
+    <p id="pip-note" class="muted small" hidden>浮動視窗開著時切到遊戲，會試著保留麥克風（iPhone 能不能說話要實測）。
+      Safari 支援的話，切到其他 App 時會自動變成浮動視窗。</p>
     <p id="ios-note" class="muted small" hidden>iPhone 鎖定螢幕或切到其他 App 時，Safari 不讓網頁收音，所以會先關掉麥克風、試著繼續播放其他人的聲音（實驗中，「音訊設定」可以換方式），回到這個頁面會自動開回麥克風。</p>
     <p id="mic-warning" class="warn small" hidden><span id="mic-warning-text"></span>
       <button id="mic-retry" class="ghost" type="button" hidden>開啟麥克風</button></p>

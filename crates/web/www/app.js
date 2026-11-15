@@ -232,7 +232,92 @@ function enterRoom() {
   voiceLoop(room);
   setWakeLock(settings.wakelock);
   $('#ios-note').hidden = !IOS;
+  if (pipSupported()) { $('#pip-row').hidden = false; $('#pip-note').hidden = false; startPip(); }
 }
+
+// ---------------------------------------------------------------- floating window (Picture-in-Picture)
+// A small canvas-backed video that shows mic state and who is talking. Safari can float it over other apps;
+// while it floats we keep the microphone (enterBackground), to test whether iOS keeps recording.
+let pip = null;
+
+function pipSupported() {
+  const v = document.createElement('video');
+  return !!(document.pictureInPictureEnabled || typeof v.webkitSetPresentationMode === 'function')
+    && typeof HTMLCanvasElement.prototype.captureStream === 'function';
+}
+
+function pipActive() {
+  if (!pip) return false;
+  return document.pictureInPictureElement === pip.video || pip.video.webkitPresentationMode === 'picture-in-picture';
+}
+
+function startPip() {
+  if (pip) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = 480; canvas.height = 270;
+  const video = $('#pip-video');
+  video.autoPictureInPicture = true;
+  pip = { canvas, video, g: canvas.getContext('2d'), timer: 0 };
+  drawPip();
+  video.srcObject = canvas.captureStream(10);
+  video.play().catch(() => {});
+  // timers keep running in the floating window; requestAnimationFrame would not
+  pip.timer = setInterval(drawPip, 200);
+  const onChange = () => { $('#pip-btn').textContent = pipActive() ? '關閉浮動視窗' : '浮動視窗（實驗）'; };
+  video.addEventListener('enterpictureinpicture', onChange);
+  video.addEventListener('leavepictureinpicture', onChange);
+  video.addEventListener('webkitpresentationmodechanged', onChange);
+}
+
+function stopPip() {
+  if (!pip) return;
+  clearInterval(pip.timer);
+  if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+  pip.video.srcObject = null;
+  pip = null;
+}
+
+function drawPip() {
+  if (!pip) return;
+  const { g, canvas } = pip;
+  const st = audioStatus;
+  g.fillStyle = '#16181d';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.font = 'bold 30px system-ui, sans-serif';
+  g.fillStyle = '#e9ebf0';
+  g.fillText('MultiVoice', 24, 50);
+  const talking = st && st.active && !muted && !deafened;
+  let mic = !micStream ? '麥克風：關閉' : muted || deafened ? '麥克風：靜音' : talking ? '送出中' : '麥克風：安靜';
+  if (micStream?.getAudioTracks()[0]?.muted) mic = '麥克風：系統暫停';
+  g.font = 'bold 34px system-ui, sans-serif';
+  g.fillStyle = talking ? '#43b581' : muted || deafened || !micStream ? '#dc5046' : '#9aa0ad';
+  g.fillText(mic, 24, 110);
+  // level bar
+  const lvl = st && micStream ? Math.max(0, Math.min(1, (st.level + 70) / 70)) : 0;
+  g.fillStyle = '#272b34';
+  g.fillRect(24, 130, canvas.width - 48, 14);
+  g.fillStyle = st?.voiced ? '#43b581' : '#4278dc';
+  g.fillRect(24, 130, (canvas.width - 48) * lvl, 14);
+  // who is talking
+  const names = st && state ? [...st.speaking.keys()].map(memberName) : [];
+  g.font = '28px system-ui, sans-serif';
+  g.fillStyle = names.length ? '#43b581' : '#9aa0ad';
+  g.fillText(names.length ? '說話中：' + names.join('、') : '沒人說話', 24, 200, canvas.width - 48);
+}
+
+$('#pip-btn').addEventListener('click', async () => {
+  if (!pip) startPip();
+  try {
+    if (pipActive()) {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else pip.video.webkitSetPresentationMode('inline');
+    } else {
+      await pip.video.play().catch(() => {});
+      if (pip.video.requestPictureInPicture) await pip.video.requestPictureInPicture();
+      else pip.video.webkitSetPresentationMode('picture-in-picture');
+    }
+  } catch (ex) { log('無法開啟浮動視窗：' + (ex.message || ex)); }
+});
 
 async function eventLoop(r) {
   for (;;) {
@@ -255,6 +340,7 @@ async function voiceLoop(r) {
 }
 
 async function exitRoom(reason) {
+  stopPip();
   const r = room;
   room = null;
   state = null;
@@ -542,6 +628,8 @@ function setAudioSession(type) {
  */
 function enterBackground() {
   if (!IOS || !room || !ctx || settings.bgListen === 0) return;
+  // floating window open: keep the mic (experiment: can we still talk while in a game?)
+  if (pipActive()) { log('浮動視窗中：保留麥克風'); return; }
   if (micStream) {
     micStream.getTracks().forEach((t) => t.stop());
     try { micSource?.disconnect(); } catch {}
