@@ -132,6 +132,13 @@ pub fn find_device(input: bool, name_contains: Option<&str>) -> Result<cpal::Dev
     }
 }
 
+/// 列出輸入或輸出裝置名稱（給設定介面用）
+pub fn list_devices(input: bool) -> Vec<String> {
+    let host = cpal::default_host();
+    let devices = if input { host.input_devices() } else { host.output_devices() };
+    devices.map(|it| it.map(|d| device_name(&d)).collect()).unwrap_or_default()
+}
+
 pub fn device_name(d: &cpal::Device) -> String {
     d.description().map(|x| x.to_string()).unwrap_or_else(|_| "(未知裝置)".into())
 }

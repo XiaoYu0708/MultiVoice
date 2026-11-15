@@ -338,7 +338,10 @@ on voice datagram from S with target_id t:
 │  ├─ mixer-core/          ← 混音、jitter buffer 的純邏輯部分（無 I/O，原生與 WASM 共用）
 │  ├─ host-core/           ← 房主邏輯：扇出、去重、權限、狀態複製、候補排序（無 UI、無音訊）
 │  ├─ client-core/         ← 連線、加入/重新導向、訂閱、talk target、房主轉移的成員端狀態機
-│  ├─ desktop/             ← egui 桌面程式（bin：MultiVoice.exe），內嵌 host-core
+│  ├─ transport/           ← iroh 端點設定（relay 清單）、控制訊息讀寫
+│  ├─ session/             ← 建房／加入、音訊管線（擷取→降噪→VAD→編碼、jitter→解碼→混音）、狀態快照
+│  ├─ desktop/             ← egui 桌面程式（bin：multivoice.exe），透過 session 內嵌 host-core
+│  ├─ cli/                 ← 命令列客戶端（bin：multivoice-cli.exe），除錯與自動測試用
 │  ├─ web/                 ← 網頁客戶端（wasm-bindgen + AudioWorklet），見 §8
 │  ├─ headless-host/       ← 無介面常駐房主（可選，Docker）
 │  └─ sim/                 ← 模擬器：在一個行程內起 N 個虛擬成員，測試扇出語意與房主轉移

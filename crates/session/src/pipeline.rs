@@ -152,7 +152,8 @@ mod cpal_stream {
     pub type Stream = Box<dyn std::any::Any>;
 }
 
-pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<AudioHandle> {
+/// `rt`：接收語音的 task 跑在這個 runtime 上（呼叫端可能是沒有 tokio context 的 GUI 執行緒）
+pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts, rt: &tokio::runtime::Handle) -> Result<AudioHandle> {
     let in_dev = device::find_device(true, o.input.as_deref()).map_err(anyhow::Error::from_boxed)?;
     let out_dev = device::find_device(false, o.output.as_deref()).map_err(anyhow::Error::from_boxed)?;
 
@@ -166,7 +167,7 @@ pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<Audio
         .map_err(anyhow::Error::from_boxed)?;
 
     spawn_capture(client.clone(), shared.clone(), in_cons, o.clone())?;
-    spawn_receive(client, shared.clone());
+    spawn_receive(client, shared.clone(), rt);
     spawn_playback(shared, out_prod, cap, o.buffer_ms);
 
     Ok(AudioHandle {
@@ -240,8 +241,8 @@ fn spawn_capture(client: Client, shared: Arc<Shared>, mut ring: rtrb::Consumer<f
     Ok(())
 }
 
-fn spawn_receive(client: Client, shared: Arc<Shared>) {
-    tokio::spawn(async move {
+fn spawn_receive(client: Client, shared: Arc<Shared>, rt: &tokio::runtime::Handle) {
+    rt.spawn(async move {
         while let Ok(d) = client.recv_voice().await {
             let Some(v) = VoiceDown::parse(&d) else { continue };
             let now = shared.now_us();

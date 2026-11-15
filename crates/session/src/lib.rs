@@ -140,7 +140,7 @@ impl Session {
     /// 啟動音訊，並在 `rt` 上開一個 task 處理控制事件
     pub fn start(c: Connected, audio: &AudioOpts, rt: &tokio::runtime::Handle) -> Result<Session> {
         let shared = Arc::new(Shared::new());
-        let handle = match pipeline::start(c.client.clone(), shared.clone(), audio) {
+        let handle = match pipeline::start(c.client.clone(), shared.clone(), audio, rt) {
             Ok(h) => h,
             Err(e) => {
                 // 音訊裝置打不開：離開房間、關閉端點，不留下半套連線

@@ -9,6 +9,7 @@ members = [
     "crates/client-core",
     "crates/session",
     "crates/cli",
+    "crates/desktop",
     "crates/netprobe",
 ]
 

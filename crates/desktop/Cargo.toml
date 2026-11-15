@@ -1,0 +1,20 @@
+[package]
+name = "desktop"
+description = "MultiVoice 桌面客戶端（egui）"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "multivoice"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+audio = { version = "0.1.0", path = "../audio" }
+eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow"] }
+serde = { version = "1", features = ["derive"] }
+session = { version = "0.1.0", path = "../session" }
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
