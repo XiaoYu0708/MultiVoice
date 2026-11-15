@@ -14,6 +14,7 @@
 //!   --gain <倍數>        輸出增益（預設 1.0；0 = 靜音，仍會量測）
 //!   --seconds <秒>       執行秒數（預設：按 Enter 結束）
 //!   --no-denoise         關閉 RNNoise 降噪（預設開啟）
+//!   --mix <0..1>         判定有人聲時混回原音的比例（預設 0.3；0 = 純 RNNoise）
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,7 @@ struct Opts {
     gain: f32,
     seconds: Option<u64>,
     denoise: bool,
+    mix: f32,
 }
 
 fn parse_args() -> Opts {
@@ -44,6 +46,7 @@ fn parse_args() -> Opts {
         gain: 1.0,
         seconds: None,
         denoise: true,
+        mix: 0.3,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -57,6 +60,7 @@ fn parse_args() -> Opts {
             "--gain" => o.gain = val().parse().expect("--gain"),
             "--seconds" => o.seconds = Some(val().parse().expect("--seconds")),
             "--no-denoise" => o.denoise = false,
+            "--mix" => o.mix = val().parse().expect("--mix"),
             "-h" | "--help" => {
                 println!("見 crates/audio/examples/loopback.rs 開頭的說明");
                 std::process::exit(0);
@@ -128,7 +132,7 @@ fn main() -> Result<(), device::Error> {
     println!(
         "位元率 {} kbps｜模擬掉包 {}%｜輸出緩衝目標 {} ms｜增益 {}｜降噪 {}",
         o.bitrate / 1000, o.loss_pct, o.buffer_ms, o.gain,
-        if o.denoise { "開（RNNoise，多約 10 ms 延遲）" } else { "關" }
+        if o.denoise { format!("開（RNNoise，多約 10 ms 延遲；人聲混回原音 {}）", o.mix) } else { "關".into() }
     );
     println!("請戴耳機。對麥克風拍手或彈一下（間隔 0.5 秒以上）即可量測端到端延遲。");
     match o.seconds {
@@ -147,7 +151,11 @@ fn main() -> Result<(), device::Error> {
     }
 
     let mut enc = Encoder::new(o.bitrate)?;
-    let mut denoiser = o.denoise.then(Denoiser::new);
+    let mut denoiser = o.denoise.then(|| {
+        let mut d = Denoiser::new();
+        d.set_speech_mix(o.mix);
+        d
+    });
     let mut post_peak = 0f32; // 降噪後（送進編碼器前）的峰值
     let (mut vad_sum, mut vad_n) = (0f32, 0u32);
     let mut dec = Decoder::new()?;
