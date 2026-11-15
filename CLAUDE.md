@@ -39,15 +39,19 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
 | `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音 |
 | `hotkeys` | 全域按鍵：LL hook（不攔截）、按鍵解析、錄製模式（只在 Windows 有作用） |
-| `session` | 建房／加入（async）+ 音訊管線（含 PTT／廣播／靜音鍵、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
-| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`） |
+| `session` | 建房／加入（async）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
+| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
 
 伺服器端基礎設施在 `deploy/`（Docker：Caddy + 自架 iroh-relay，`relay.xiaoyu0708.ip-ddns.com`）。
 
+## 使用者的產品決定
+- 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵
+- 房間畫面不要有獨立的「語音設定」區塊，設定放在各頻道卡片裡
+
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 45 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 47 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 端對端煙霧測試：背景跑 `multivoice-cli host --open-mic --volume 0 --seconds N`，從輸出抓 `mv1…` 邀請票，再跑 `multivoice-cli join <票> --profile 別的名稱 …`
 - **UI 驗證**：`tools/shot.ps1` 會啟動桌面版、用 PrintWindow 截圖（不怕被其他視窗蓋住），再用 Read 看圖：
@@ -58,6 +62,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   ```
   桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`
   （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）
+- **UI 自動點擊前一定要確認 MultiVoice 是前景視窗**，否則會點到使用者的其他視窗；使用者正在用電腦時（例如剪貼簿內容變了）就停止自動點擊
 - 測試會在 `%APPDATA%\MultiVoice\` 產生 `identity-<profile>.key`、`settings-<profile>.toml`，**測完要刪掉測試用的**（保留 `identity-default.key`、`identity-test2.key`、`settings.toml`）。
 - egui 字型是微軟正黑體，**沒有 emoji**（會顯示成方框），UI 不要用 emoji。
 

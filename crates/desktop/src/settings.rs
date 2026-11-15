@@ -24,14 +24,14 @@ pub struct Settings {
     /// 按鍵說話：頻道名稱 → 按鍵（頻道 ID 每次建房都不同，所以用名稱）。
     /// 有設定的頻道，加入時自動用「按鍵說話」
     pub ptt_keys: BTreeMap<String, String>,
-    /// 全域廣播鍵（按住對所有會說話的頻道說話）
-    pub broadcast_key: Option<String>,
-    /// 全域靜音鍵（按一下切換）
-    pub mute_key: Option<String>,
     /// 開／關麥提示音
     pub cues: bool,
     /// 在房間中關閉視窗時縮到系統匣（不離開房間）
     pub close_to_tray: bool,
+    /// 頻道設定檔（一鍵切換訂閱組合）
+    pub presets: Vec<crate::presets::Preset>,
+    /// 最近套用／儲存的設定檔（下次開啟時預先選好）
+    pub last_preset: Option<String>,
 }
 
 impl Default for Settings {
@@ -46,10 +46,10 @@ impl Default for Settings {
             output_volume: 1.0,
             last_ticket: String::new(),
             ptt_keys: BTreeMap::new(),
-            broadcast_key: None,
-            mute_key: None,
             cues: true,
             close_to_tray: true,
+            presets: Vec::new(),
+            last_preset: None,
         }
     }
 }
@@ -86,8 +86,6 @@ impl Settings {
             denoise: self.denoise,
             mix: self.speech_mix,
             volume: self.output_volume,
-            broadcast_key: parse_key(&self.broadcast_key),
-            mute_key: parse_key(&self.mute_key),
             cues: self.cues,
             ..Default::default()
         }
@@ -97,8 +95,4 @@ impl Settings {
     pub fn ptt_key(&self, channel: &str) -> Option<session::Hotkey> {
         self.ptt_keys.get(channel).and_then(|k| k.parse().ok())
     }
-}
-
-fn parse_key(k: &Option<String>) -> Option<session::Hotkey> {
-    k.as_deref().and_then(|k| k.parse().ok())
 }

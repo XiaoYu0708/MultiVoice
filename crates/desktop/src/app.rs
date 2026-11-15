@@ -7,6 +7,7 @@ use eframe::egui::{self, Color32, RichText};
 use protocol::DEFAULT_CHANNEL;
 use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkeys};
 
+use crate::presets;
 use crate::settings::Settings;
 use crate::tray::Tray;
 use crate::style::{AMBER, BLUE, GREEN, RED};
@@ -44,16 +45,17 @@ pub struct App {
     tray: Option<std::sync::Arc<Tray>>,
     /// 這次執行是否已經顯示過「仍在執行」通知
     tray_notified: bool,
+    /// 設定檔下拉選單目前選的名稱
+    preset_sel: Option<String>,
+    /// 正在輸入「另存設定檔」的名稱
+    preset_new: Option<String>,
+    /// 設定檔操作結果（顯示一段時間）
+    preset_msg: Option<(String, Instant)>,
 }
 
-/// 要設定的按鍵
+/// 正在設定 PTT 鍵的頻道（ID、名稱）
 #[derive(Clone, Debug, PartialEq)]
-enum KeyTarget {
-    /// 頻道的 PTT 鍵（頻道 ID、名稱）
-    Channel(u32, String),
-    Broadcast,
-    Mute,
-}
+struct KeyTarget(u32, String);
 
 enum Auto {
     Host,
@@ -77,6 +79,7 @@ impl App {
             }
         }
         let settings = Settings::load(&profile);
+        let last_preset = settings.last_preset.clone();
         Self {
             auto,
             start_deafened,
@@ -101,11 +104,14 @@ impl App {
             confirm_delete: None,
             tray,
             tray_notified: false,
+            preset_sel: last_preset,
+            preset_new: None,
+            preset_msg: None,
         }
     }
 
     /// 本視窗在前景時，全域 hook 收不到大部分鍵盤事件（見 `hotkeys::feed`），
-    /// 把 egui 收到的按鍵與修飾鍵變化補送過去：錄製按鍵、PTT、靜音鍵在本視窗裡也能用
+    /// 把 egui 收到的按鍵與修飾鍵變化補送過去：錄製按鍵、PTT 在本視窗裡也能用
     fn feed_local_keys(&mut self, ctx: &egui::Context) {
         // 在文字框打字時不算按鍵（否則輸入頻道名稱時打到 PTT 鍵的字母會開麥）
         let typing = ctx.egui_wants_keyboard_input() && self.recording.is_none();
@@ -173,18 +179,12 @@ impl App {
             }
             return;
         };
-        let t = self.recording.take().unwrap();
+        let KeyTarget(id, name) = self.recording.take().unwrap();
         let hotkeys::Recorded::Key(k) = r else { return };
-        match t {
-            KeyTarget::Broadcast => self.settings.broadcast_key = Some(k.to_string()),
-            KeyTarget::Mute => self.settings.mute_key = Some(k.to_string()),
-            KeyTarget::Channel(id, name) => {
-                self.settings.ptt_keys.insert(name, k.to_string());
-                let mine = snap.and_then(|s| s.channels.iter().find(|c| c.id == id)).and_then(|c| c.mine);
-                if let (Some(s), Some(cfg)) = (&self.session, mine) {
-                    let _ = s.set_channel(id, Some(ChannelCfg { talk: TalkMode::Ptt, ptt_key: Some(k), ..cfg }));
-                }
-            }
+        self.settings.ptt_keys.insert(name, k.to_string());
+        let mine = snap.and_then(|s| s.channels.iter().find(|c| c.id == id)).and_then(|c| c.mine);
+        if let (Some(s), Some(cfg)) = (&self.session, mine) {
+            let _ = s.set_channel(id, Some(ChannelCfg { talk: TalkMode::Ptt, ptt_key: Some(k), ..cfg }));
         }
     }
 
@@ -331,31 +331,14 @@ impl App {
         }
 
         ui.add_space(8.0);
-        ui.label(RichText::new("全域按鍵（遊戲在前景時也有效）").strong());
-        for (target, label) in [(KeyTarget::Broadcast, "廣播鍵（按住對所有頻道說話）"), (KeyTarget::Mute, "靜音鍵（按一下切換）")] {
-            ui.horizontal(|ui| {
-                ui.label(label);
-                let cur = match target {
-                    KeyTarget::Broadcast => self.settings.broadcast_key.clone(),
-                    _ => self.settings.mute_key.clone(),
-                };
-                if key_button(ui, &self.recording, &target, cur.as_deref()) {
-                    self.start_recording(target.clone());
-                }
-                if cur.is_some() && ui.small_button("清除").clicked() {
-                    match target {
-                        KeyTarget::Broadcast => self.settings.broadcast_key = None,
-                        _ => self.settings.mute_key = None,
-                    }
-                }
-            });
-        }
+        ui.label(RichText::new("按鍵說話").strong());
+        ui.weak("進房後在頻道的「說話」選「按鍵說話」設定按鍵；遊戲在前景時也有效");
         ui.checkbox(&mut self.settings.cues, "開／關麥提示音");
         if self.tray.is_some() {
             ui.checkbox(&mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
         }
         if let Some(e) = &self.hotkey_err {
-            ui.colored_label(RED, format!("全域按鍵無法使用：{e}"));
+            ui.colored_label(RED, format!("按鍵說話無法使用：{e}"));
         } else if !hotkeys::is_admin() {
             ui.weak("如果遊戲以系統管理員身分執行，這裡也要以管理員身分執行，否則遊戲在前景時收不到按鍵");
             if ui.small_button("以系統管理員身分重新啟動").clicked() && hotkeys::relaunch_as_admin() {
@@ -424,6 +407,7 @@ impl App {
 
         ui.add_space(6.0);
         ui.label(RichText::new("頻道").strong());
+        self.presets_bar(ui, snap);
         for ch in &snap.channels {
             self.channel_card(ui, ch, snap.is_host);
         }
@@ -446,13 +430,7 @@ impl App {
             ui.colored_label(RED, format!("連線中斷：{why}"));
         }
 
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new("語音設定").default_open(false).show(ui, |ui| {
-            ui.add(egui::Slider::new(&mut self.settings.output_volume, 0.0..=2.0).text("輸出音量"));
-            ui.add_space(4.0);
-            self.audio_settings(ui);
-        });
-        // 設定有變就套用：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
+        // 設定有變就套用（例如系統匣或其他地方改了設定）：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
         let opts = self.settings.audio_opts();
         if self.applied.as_ref() != Some(&opts) {
             if let Some(s) = self.session.as_mut() {
@@ -477,6 +455,112 @@ impl App {
     }
 
     /// 一個頻道：名稱（右鍵改名／刪除）、加入／離開、我的說話與收聽設定、頻道成員
+    /// 設定檔列：選擇、套用、另存目前組合、刪除
+    fn presets_bar(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        ui.horizontal(|ui| {
+            ui.label("設定檔");
+            let names: Vec<String> = self.settings.presets.iter().map(|p| p.name.clone()).collect();
+            if self.preset_sel.as_ref().is_some_and(|n| !names.contains(n)) {
+                self.preset_sel = None;
+            }
+            let text = match (&self.preset_sel, names.is_empty()) {
+                (Some(n), _) => n.clone(),
+                (None, true) => "（還沒有）".into(),
+                (None, false) => "選擇…".into(),
+            };
+            egui::ComboBox::from_id_salt("preset").width(130.0).selected_text(text).show_ui(ui, |ui| {
+                for n in &names {
+                    ui.selectable_value(&mut self.preset_sel, Some(n.clone()), n);
+                }
+            });
+            let sel = self.preset_sel.clone();
+            if ui.add_enabled(sel.is_some(), egui::Button::new("套用").small()).clicked()
+                && let Some(n) = &sel
+            {
+                self.apply_preset(snap, n);
+            }
+            if ui.small_button("另存").on_hover_text("把目前各頻道的設定存成設定檔").clicked() {
+                self.preset_new = Some(sel.clone().unwrap_or_default());
+            }
+            if ui.add_enabled(sel.is_some(), egui::Button::new("刪除").small()).clicked()
+                && let Some(n) = &sel
+            {
+                self.settings.presets.retain(|p| &p.name != n);
+                self.preset_msg = Some((format!("已刪除設定檔「{n}」"), Instant::now()));
+                self.preset_sel = None;
+            }
+        });
+        if let Some(name) = &mut self.preset_new {
+            let mut done = None;
+            ui.horizontal(|ui| {
+                let r = ui.add(egui::TextEdit::singleline(name).hint_text("設定檔名稱，例如：公會戰指揮").desired_width(200.0));
+                r.request_focus();
+                let ok = !name.trim().is_empty();
+                if ok && (ui.small_button("儲存").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    done = Some(true);
+                } else if ui.small_button("取消").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+            match done {
+                Some(true) => {
+                    let name = self.preset_new.take().unwrap().trim().to_string();
+                    let p = presets::capture(&name, snap.channels.iter().filter_map(|c| c.mine.as_ref().map(|m| (c.name.as_str(), m))));
+                    let n = p.channels.len();
+                    match self.settings.presets.iter_mut().find(|q| q.name == name) {
+                        Some(q) => *q = p,
+                        None => self.settings.presets.push(p),
+                    }
+                    self.preset_msg = Some((format!("已儲存設定檔「{name}」（{n} 個頻道）"), Instant::now()));
+                    self.settings.last_preset = Some(name.clone());
+                    self.preset_sel = Some(name);
+                }
+                Some(false) => self.preset_new = None,
+                None => {}
+            }
+        }
+        if let Some((msg, t)) = &self.preset_msg {
+            if t.elapsed() < Duration::from_secs(5) {
+                ui.weak(msg);
+            } else {
+                self.preset_msg = None;
+            }
+        }
+    }
+
+    /// 套用設定檔：設定檔裡的頻道照設定加入，其他頻道離開
+    fn apply_preset(&mut self, snap: &Snapshot, name: &str) {
+        let Some(p) = self.settings.presets.iter().find(|p| p.name == name).cloned() else { return };
+        let Some(s) = &self.session else { return };
+        let (changes, missing) = presets::plan(&p, snap.channels.iter().map(|c| (c.id, c.name.as_str())));
+        let mut failed = 0;
+        for (id, cfg) in changes {
+            if s.set_channel(id, cfg).is_err() {
+                failed += 1;
+            }
+        }
+        // 「加入頻道時自動用按鍵說話」的記錄也跟著設定檔走
+        for c in &p.channels {
+            match (&c.talk[..], &c.ptt_key) {
+                ("ptt", Some(k)) => {
+                    self.settings.ptt_keys.insert(c.channel.clone(), k.clone());
+                }
+                _ => {
+                    self.settings.ptt_keys.remove(&c.channel);
+                }
+            }
+        }
+        self.settings.last_preset = Some(name.to_string());
+        let mut msg = format!("已套用「{name}」");
+        if !missing.is_empty() {
+            msg += &format!("（房間裡沒有：{}）", missing.join("、"));
+        }
+        if failed > 0 {
+            msg += &format!("（{failed} 個頻道設定失敗）");
+        }
+        self.preset_msg = Some((msg, Instant::now()));
+    }
+
     /// `is_host`：房主才顯示改名／刪除
     fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView, is_host: bool) {
         let Some(s) = &self.session else { return };
@@ -553,7 +637,7 @@ impl App {
                         });
                     if cfg.talk == TalkMode::Ptt {
                         let cur = self.settings.ptt_keys.get(&ch.name).cloned();
-                        let t = KeyTarget::Channel(ch.id, ch.name.clone());
+                        let t = KeyTarget(ch.id, ch.name.clone());
                         if key_button(ui, &self.recording, &t, cur.as_deref()) {
                             record = Some(t);
                         }
@@ -580,7 +664,7 @@ impl App {
                         // 改成按鍵說話：套用存好的鍵；還沒設定就直接開始錄製
                         cfg.ptt_key = self.settings.ptt_key(&ch.name);
                         if cfg.ptt_key.is_none() {
-                            record = Some(KeyTarget::Channel(ch.id, ch.name.clone()));
+                            record = Some(KeyTarget(ch.id, ch.name.clone()));
                         }
                     } else if before.talk == TalkMode::Ptt {
                         // 不再用按鍵說話：下次加入時也不套用

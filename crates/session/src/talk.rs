@@ -14,14 +14,10 @@ pub struct TalkInputs {
     pub open: u64,
     /// 說話模式「偵測說話」的頻道
     pub vad: u64,
-    /// 所有會說話（talk != Off）的頻道，全域廣播鍵用
-    pub all: u64,
     /// 這一幀偵測到人聲
     pub voiced: bool,
     /// 目前按住的 PTT 鍵所對應的頻道
     pub ptt_held: u64,
-    /// 按住全域廣播鍵
-    pub broadcast: bool,
     pub muted: bool,
 }
 
@@ -42,8 +38,8 @@ impl TalkState {
     /// 算出這一幀的 talk_mask
     pub fn step(&mut self, i: &TalkInputs) -> u64 {
         self.vad_hang = if i.voiced { VAD_HANGOVER_FRAMES } else { self.vad_hang.saturating_sub(1) };
-        // PTT 與廣播鍵不經過 VAD；每個槽位各自延長，放開其中一個鍵不影響其他
-        let held = i.ptt_held | if i.broadcast { i.all } else { 0 };
+        // PTT 不經過 VAD；每個槽位各自延長，放開其中一個鍵不影響其他
+        let held = i.ptt_held;
         let mut ptt = 0u64;
         for (s, h) in self.ptt_hang.iter_mut().enumerate() {
             if held & (1 << s) != 0 {
@@ -74,9 +70,6 @@ pub enum Cue {
     /// 開始按鍵說話；音高依頻道（槽位）不同
     PttOn(u8),
     PttOff(u8),
-    /// 全域廣播
-    BroadcastOn,
-    BroadcastOff,
     Muted,
     Unmuted,
 }
@@ -89,8 +82,6 @@ impl Cue {
         match self {
             Cue::PttOn(s) => [base(s), base(s) * 1.26],
             Cue::PttOff(s) => [base(s) * 1.26, base(s)],
-            Cue::BroadcastOn => [1046.5, 1318.5],
-            Cue::BroadcastOff => [1318.5, 1046.5],
             Cue::Muted => [440.0, 330.0],
             Cue::Unmuted => [330.0, 440.0],
         }
@@ -149,7 +140,7 @@ mod tests {
     #[test]
     fn open_vad_and_mute() {
         let mut st = TalkState::default();
-        let i = TalkInputs { open: 0b001, vad: 0b010, all: 0b111, ..Default::default() };
+        let i = TalkInputs { open: 0b001, vad: 0b010, ..Default::default() };
         assert_eq!(st.step(&i), 0b001, "沒說話：只有常開");
         assert_eq!(st.step(&TalkInputs { voiced: true, ..i }), 0b011);
         // 講完後延長
@@ -161,7 +152,7 @@ mod tests {
     #[test]
     fn ptt_hangover_per_slot() {
         let mut st = TalkState::default();
-        let both = TalkInputs { ptt_held: 0b1100, all: 0b1111, ..Default::default() };
+        let both = TalkInputs { ptt_held: 0b1100, ..Default::default() };
         assert_eq!(st.step(&both), 0b1100, "PTT 不經過 VAD");
         // 放開槽位 2 的鍵，槽位 3 還按著
         let one = TalkInputs { ptt_held: 0b1000, ..both };
@@ -172,14 +163,11 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_and_mute() {
+    fn ptt_muted() {
         let mut st = TalkState::default();
-        let i = TalkInputs { vad: 0b01, all: 0b111, broadcast: true, ..Default::default() };
-        assert_eq!(st.step(&i), 0b111, "廣播鍵：所有會說話的頻道");
-        assert_eq!(st.step(&TalkInputs { muted: true, ..i }), 0, "靜音時廣播也不送");
-        let released = TalkInputs { broadcast: false, ..i };
-        assert_eq!(st.step(&released), 0b111, "放開後延長");
-        assert_eq!(run(&mut st, released, PTT_HANGOVER_FRAMES as usize), 0);
+        let i = TalkInputs { ptt_held: 0b10, ..Default::default() };
+        assert_eq!(st.step(&TalkInputs { muted: true, ..i }), 0, "靜音時按 PTT 也不送");
+        assert_eq!(st.step(&i), 0b10);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! 音訊管線：
 //!
 //! ```text
-//! 麥克風 → [擷取執行緒] 降噪 → VAD ＋ 按鍵（PTT／廣播／靜音）→ 依各頻道說話模式算出 talk_mask → Opus 編碼 → client.send_voice
+//! 麥克風 → [擷取執行緒] 降噪 → VAD ＋ 按鍵說話（PTT）→ 依各頻道說話模式算出 talk_mask → Opus 編碼 → client.send_voice
 //! client.recv_voice → [tokio task] 每位說話者的 jitter buffer（記下 via_mask）
 //! [播放執行緒] 各 jitter buffer → 各自的 Opus 解碼器 → 依頻道混音規則（音量、定位、優先 ducking）→ 立體聲 ＋ 提示音 → 耳機
 //! ```
@@ -45,10 +45,6 @@ pub struct AudioOpts {
     pub bitrate: i32,
     pub buffer_ms: u32,
     pub volume: f32,
-    /// 全域廣播鍵：按住時對所有會說話的頻道說話
-    pub broadcast_key: Option<Hotkey>,
-    /// 全域靜音鍵：按一下切換靜音
-    pub mute_key: Option<Hotkey>,
     /// 開／關麥提示音
     pub cues: bool,
 }
@@ -64,8 +60,6 @@ impl Default for AudioOpts {
             bitrate: 32_000,
             buffer_ms: 30,
             volume: 1.0,
-            broadcast_key: None,
-            mute_key: None,
             cues: true,
         }
     }
@@ -132,13 +126,8 @@ pub struct Shared {
     /// 說話模式為「偵測說話」／「常開」的頻道（我的槽位）
     vad_mask: AtomicU64,
     open_mask: AtomicU64,
-    /// 所有 talk != Off 的頻道（全域廣播鍵用）
-    all_mask: AtomicU64,
     /// PTT 鍵 → 對應的頻道遮罩
     ptt_keys: Mutex<Vec<(Hotkey, u64)>>,
-    broadcast_key: Mutex<Option<Hotkey>>,
-    /// 全域靜音鍵與它的按下次數（擷取執行緒每幀取走）
-    mute_watch: Mutex<Option<(Hotkey, Arc<AtomicU32>)>>,
     cues: AtomicBool,
     /// 待播的提示音（播放執行緒取走；新的蓋掉舊的）
     cue: Mutex<Option<Cue>>,
@@ -181,10 +170,7 @@ impl Shared {
             slots: Mutex::new([SlotInfo::default(); SLOTS]),
             vad_mask: AtomicU64::new(0),
             open_mask: AtomicU64::new(0),
-            all_mask: AtomicU64::new(0),
             ptt_keys: Mutex::new(Vec::new()),
-            broadcast_key: Mutex::new(None),
-            mute_watch: Mutex::new(None),
             cues: AtomicBool::new(true),
             cue: Mutex::new(None),
             tx_mask: AtomicU64::new(0),
@@ -205,11 +191,6 @@ impl Shared {
         store_f32(&self.speech_mix, o.mix);
         store_f32(&self.volume, o.volume);
         self.cues.store(o.cues, Ordering::Relaxed);
-        *self.broadcast_key.lock().unwrap() = o.broadcast_key;
-        let mut mw = self.mute_watch.lock().unwrap();
-        if mw.as_ref().map(|(k, _)| *k) != o.mute_key {
-            *mw = o.mute_key.map(|k| (k, hotkeys::watch_presses(k)));
-        }
     }
 
     /// 實際上是否不送出聲音：自己靜音，或拒聽中（拒聽一定連麥克風一起關）
@@ -234,7 +215,7 @@ impl Shared {
         self.deafened.store(v, Ordering::Relaxed);
     }
 
-    /// 靜音鍵：目前沒聲音（靜音或拒聽）→ 全部打開；否則靜音
+    /// 切換靜音（系統匣選單用）：目前沒聲音（靜音或拒聽）→ 全部打開；否則靜音
     pub fn toggle_mute(&self) {
         self.set_muted(!self.is_muted());
     }
@@ -262,7 +243,7 @@ impl Shared {
     pub fn rebuild(&self, my_slots: &HashMap<ChannelId, u8>) {
         let cfgs = self.cfgs.lock().unwrap();
         let mut slots = [SlotInfo::default(); SLOTS];
-        let (mut vad, mut open, mut all) = (0u64, 0u64, 0u64);
+        let (mut vad, mut open) = (0u64, 0u64);
         let mut ptt: Vec<(Hotkey, u64)> = Vec::new();
         for (&ch, &slot) in my_slots {
             let Some(cfg) = cfgs.get(&ch) else { continue };
@@ -278,15 +259,13 @@ impl Shared {
                     },
                     None => {}
                 },
-                TalkMode::Off => continue,
+                TalkMode::Off => {}
             }
-            all |= bit;
         }
         *self.slots.lock().unwrap() = slots;
         *self.ptt_keys.lock().unwrap() = ptt;
         self.vad_mask.store(vad, Ordering::Relaxed);
         self.open_mask.store(open, Ordering::Relaxed);
-        self.all_mask.store(all, Ordering::Relaxed);
     }
 
     /// 遮罩（我的槽位）→ 頻道
@@ -424,8 +403,8 @@ fn spawn_capture(
         let mut prev: Option<Vec<u8>> = None; // 前一幀（開口時補送，避免切掉字頭）
         let mut talk = TalkState::default();
         let mut active = false;
-        // 提示音用：上一幀按住的 PTT 頻道／廣播鍵、靜音狀態
-        let (mut prev_ptt, mut prev_bc) = (0u64, false);
+        // 提示音用：上一幀按住的 PTT 頻道、靜音狀態
+        let mut prev_ptt = 0u64;
         let mut prev_muted = shared.is_muted();
         let running = || !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed);
         while running() {
@@ -456,12 +435,6 @@ fn spawn_capture(
                 };
                 frame.clear();
 
-                // 全域靜音鍵：每按一次切換
-                if let Some((_, c)) = shared.mute_watch.lock().unwrap().as_ref() {
-                    if c.swap(0, Ordering::Relaxed) % 2 == 1 {
-                        shared.toggle_mute();
-                    }
-                }
                 let muted = shared.is_muted();
                 let ptt_held = shared
                     .ptt_keys
@@ -470,27 +443,22 @@ fn spawn_capture(
                     .iter()
                     .filter(|(k, _)| k.held())
                     .fold(0u64, |m, (_, b)| m | b);
-                let broadcast = shared.broadcast_key.lock().unwrap().is_some_and(|k| k.held());
                 let mask = talk.step(&TalkInputs {
                     open: shared.open_mask.load(Ordering::Relaxed),
                     vad: shared.vad_mask.load(Ordering::Relaxed),
-                    all: shared.all_mask.load(Ordering::Relaxed),
                     voiced: vad >= VAD_PROB && db >= VAD_MIN_DBFS,
                     ptt_held,
-                    broadcast,
                     muted,
                 });
 
-                // 提示音：靜音切換；沒靜音時 PTT／廣播鍵按下與放開
+                // 提示音：靜音切換；沒靜音時 PTT 按下與放開
                 if muted != prev_muted {
                     shared.cue(if muted { Cue::Muted } else { Cue::Unmuted });
-                } else if !muted && broadcast != prev_bc {
-                    shared.cue(if broadcast { Cue::BroadcastOn } else { Cue::BroadcastOff });
-                } else if !muted && !broadcast && (ptt_held == 0) != (prev_ptt == 0) {
+                } else if !muted && (ptt_held == 0) != (prev_ptt == 0) {
                     let slot = |m: u64| m.trailing_zeros() as u8;
                     shared.cue(if ptt_held != 0 { Cue::PttOn(slot(ptt_held)) } else { Cue::PttOff(slot(prev_ptt)) });
                 }
-                (prev_ptt, prev_bc, prev_muted) = (ptt_held, broadcast, muted);
+                (prev_ptt, prev_muted) = (ptt_held, muted);
 
                 let want = mask != 0;
 
