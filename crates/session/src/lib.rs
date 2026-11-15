@@ -30,47 +30,6 @@ pub use mixer_core::route::ChannelMix;
 pub use pipeline::{AudioOpts, ChannelCfg, JitterSummary, Shared, TalkMode};
 pub use transport::RelaySetup as Relays;
 
-/// 「誰在說話」的一行（置頂小視窗用）
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpeakLine {
-    pub name: String,
-    /// 經由哪些頻道（我自己：正在送出的頻道）
-    pub channels: Vec<String>,
-    pub me: bool,
-}
-
-/// 可以在其他執行緒讀取「誰在說話」（`Session` 本身不是 `Send`）
-#[derive(Clone)]
-pub struct SpeakFeed {
-    client: Client,
-    shared: Arc<Shared>,
-    my_name: String,
-}
-
-impl SpeakFeed {
-    /// 目前正在說話的人：我自己（送出中）排第一，其他人依序
-    pub fn lines(&self) -> Vec<SpeakLine> {
-        let channel_names: HashMap<ChannelId, String> =
-            self.client.channels().into_iter().map(|c| (c.id, c.name)).collect();
-        let names = |ids: &[ChannelId]| ids.iter().filter_map(|c| channel_names.get(c).cloned()).collect::<Vec<_>>();
-        let mut out = Vec::new();
-        let mine = self.shared.talking_to();
-        if !mine.is_empty() {
-            out.push(SpeakLine { name: self.my_name.clone(), channels: names(&mine), me: true });
-        }
-        let speaking = self.shared.speaking(Duration::from_millis(300));
-        if !speaking.is_empty() {
-            let members: HashMap<SessionIdx, String> =
-                self.client.members().into_iter().map(|m| (m.session_idx, m.display_name)).collect();
-            for (idx, via) in speaking {
-                let name = members.get(&idx).cloned().unwrap_or_else(|| format!("#{idx}"));
-                out.push(SpeakLine { name, channels: names(&via), me: false });
-            }
-        }
-        out
-    }
-}
-
 /// 已連上房間，但音訊還沒啟動
 pub struct Connected {
     client: Client,
@@ -404,11 +363,6 @@ impl Session {
             log: r.log.iter().cloned().collect(),
             disconnected: r.disconnected.clone(),
         }
-    }
-
-    /// 「誰在說話」（給其他執行緒用，例如置頂小視窗）
-    pub fn speak_feed(&self) -> SpeakFeed {
-        SpeakFeed { client: self.client.clone(), shared: self.shared.clone(), my_name: self.name.clone() }
     }
 
     /// 跨執行緒共用的即時狀態（系統匣執行緒讀取說話／靜音狀態、切換靜音用）

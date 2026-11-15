@@ -40,7 +40,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音 |
 | `hotkeys` | 全域按鍵：LL hook（不攔截）、按鍵解析、錄製模式（只在 Windows 有作用） |
 | `session` | 建房／加入（async）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
-| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔、`overlay.rs` 誰在說話小視窗） |
+| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
 
@@ -49,6 +49,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 ## 使用者的產品決定
 - 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵
 - 房間畫面不要有獨立的「語音設定」區塊，設定放在各頻道卡片裡
+- 不做置頂「誰在說話」小視窗（做過後移除）
 
 ## 測試與驗證方式
 - `cargo test --workspace`（目前 47 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）

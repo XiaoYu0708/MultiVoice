@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod overlay;
 mod presets;
 mod settings;
 mod style;
@@ -41,8 +40,7 @@ fn main() -> eframe::Result {
                 _ => None,
             };
             let tray = hwnd.and_then(tray::Tray::start);
-            let overlay = hwnd.and_then(overlay::Overlay::start);
-            Ok(Box::new(app::App::new(rt, tray, overlay)))
+            Ok(Box::new(app::App::new(rt, tray)))
         }),
     )
 }

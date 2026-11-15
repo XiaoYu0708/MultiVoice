@@ -7,7 +7,6 @@ use eframe::egui::{self, Color32, RichText};
 use protocol::DEFAULT_CHANNEL;
 use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkeys};
 
-use crate::overlay::{Corner, Overlay};
 use crate::presets;
 use crate::settings::Settings;
 use crate::tray::Tray;
@@ -46,8 +45,6 @@ pub struct App {
     tray: Option<std::sync::Arc<Tray>>,
     /// 這次執行是否已經顯示過「仍在執行」通知
     tray_notified: bool,
-    /// 置頂的「誰在說話」小視窗
-    overlay: Option<std::sync::Arc<Overlay>>,
     /// 設定檔下拉選單目前選的名稱
     preset_sel: Option<String>,
     /// 正在輸入「另存設定檔」的名稱
@@ -67,11 +64,7 @@ enum Auto {
 
 impl App {
     /// 命令列參數（測試用）：`--profile 名稱`、`--auto-host`、`--auto-join 邀請票`、`--deafen`
-    pub fn new(
-        rt: tokio::runtime::Runtime,
-        tray: Option<std::sync::Arc<Tray>>,
-        overlay: Option<std::sync::Arc<Overlay>>,
-    ) -> Self {
+    pub fn new(rt: tokio::runtime::Runtime, tray: Option<std::sync::Arc<Tray>>) -> Self {
         let mut args = std::env::args().skip(1);
         let mut profile = "default".to_string();
         let mut auto = None;
@@ -111,7 +104,6 @@ impl App {
             confirm_delete: None,
             tray,
             tray_notified: false,
-            overlay,
             preset_sel: last_preset,
             preset_new: None,
             preset_msg: None,
@@ -243,9 +235,6 @@ impl App {
                 if let Some(t) = &self.tray {
                     t.set_session(Some(s.shared()));
                 }
-                if let Some(o) = &self.overlay {
-                    o.set_feed(Some(s.speak_feed()));
-                }
                 self.session = Some(s);
                 self.applied = Some(self.settings.audio_opts());
             }
@@ -256,9 +245,6 @@ impl App {
     fn leave(&mut self) {
         if let Some(t) = &self.tray {
             t.set_session(None);
-        }
-        if let Some(o) = &self.overlay {
-            o.set_feed(None);
         }
         if let Some(s) = self.session.take() {
             self.rt.spawn(s.leave());
@@ -350,22 +336,6 @@ impl App {
         ui.checkbox(&mut self.settings.cues, "開／關麥提示音");
         if self.tray.is_some() {
             ui.checkbox(&mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
-        }
-        if self.overlay.is_some() {
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.settings.overlay, "遊戲中顯示「誰在說話」小視窗");
-                if self.settings.overlay {
-                    let cur = Corner::from_key(&self.settings.overlay_corner);
-                    egui::ComboBox::from_id_salt("overlay_corner").width(60.0).selected_text(cur.label()).show_ui(ui, |ui| {
-                        for c in Corner::ALL {
-                            if ui.selectable_label(c == cur, c.label()).clicked() {
-                                self.settings.overlay_corner = c.key().into();
-                            }
-                        }
-                    });
-                }
-            });
-            ui.weak("置頂、滑鼠可穿透；有人說話才出現。遊戲要用「無邊框視窗」模式才蓋得上去");
         }
         if let Some(e) = &self.hotkey_err {
             ui.colored_label(RED, format!("按鍵說話無法使用：{e}"));
@@ -796,10 +766,6 @@ impl eframe::App for App {
         }
 
         self.handle_close(ui.ctx());
-        if let Some(o) = &self.overlay {
-            o.set_enabled(self.settings.overlay);
-            o.set_corner(Corner::from_key(&self.settings.overlay_corner));
-        }
         self.feed_local_keys(ui.ctx());
         let snap = self.session.as_ref().map(|s| s.snapshot());
         self.poll_recording(snap.as_ref());
@@ -840,9 +806,6 @@ impl Drop for App {
         if let Some(t) = &self.tray {
             t.set_session(None);
             t.remove();
-        }
-        if let Some(o) = &self.overlay {
-            o.set_feed(None);
         }
         if let Some(s) = self.session.take() {
             let fut = s.leave();
