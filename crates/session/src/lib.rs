@@ -43,6 +43,8 @@ pub struct Connected {
 /// 建立房間：本機同時跑房主邏輯與自己的客戶端
 pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<Connected> {
     let key = identity::load_or_create(profile)?;
+    // 只有房主自己（這個 profile 的身分）能改名／刪除頻道
+    let owner = transport::node_id(&key.public());
     // 房主端點用一次性的金鑰；自己的成員身分用 profile 的永久金鑰
     let host_ep = transport::bind(transport::generate_secret(), relays.clone(), true).await?;
     let ticket = Ticket {
@@ -50,7 +52,7 @@ pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<
         secret: RoomSecret(transport::random_bytes()),
         bootstrap: vec![transport::node_id(&host_ep.id())],
     };
-    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100 });
+    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner: Some(owner) });
     tokio::spawn({
         let (host, ep) = (host.clone(), host_ep.clone());
         async move { host.run(ep).await }

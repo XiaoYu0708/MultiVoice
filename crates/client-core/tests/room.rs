@@ -10,7 +10,7 @@ use iroh::{Endpoint, EndpointAddr, SecretKey};
 use protocol::control::{ErrorCode, Subscription};
 use protocol::ticket::{RoomId, RoomSecret, Ticket};
 use protocol::voice::Kind;
-use protocol::{ChannelId, DEFAULT_CHANNEL};
+use protocol::{ChannelId, DEFAULT_CHANNEL, NodeId};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::timeout;
 use transport::RelaySetup;
@@ -25,13 +25,18 @@ struct Room {
 }
 
 async fn start_room() -> Result<Room> {
+    start_room_owned(None).await
+}
+
+/// `owner`：只有這個 NodeId 能改名／刪除頻道
+async fn start_room_owned(owner: Option<NodeId>) -> Result<Room> {
     let host_ep = transport::bind(transport::generate_secret(), RelaySetup::Disabled, true).await?;
     let ticket = Ticket {
         room_id: RoomId(transport::random_bytes()),
         secret: RoomSecret(transport::random_bytes()),
         bootstrap: vec![transport::node_id(&host_ep.id())],
     };
-    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100 });
+    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner });
     tokio::spawn({
         let host = host.clone();
         let ep = host_ep.clone();
@@ -286,6 +291,44 @@ async fn channel_lifecycle() -> Result<()> {
     assert!(b.c.my_slots().get(&ch).is_none(), "頻道刪除後槽位要釋放");
     assert!(b.c.subscriptions().iter().all(|s| s.channel != ch));
     assert!(room.host.subscriptions().iter().all(|s| s.channel != ch));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_owner_can_rename_or_delete_channels() -> Result<()> {
+    let owner_key = transport::generate_secret();
+    let room = start_room_owned(Some(transport::node_id(&owner_key.public()))).await?;
+    let mut a = member(&room, "房主", owner_key).await?;
+    let mut b = member(&room, "成員", transport::generate_secret()).await?;
+    let _ = next_event(&mut a.ev).await; // B 加入
+
+    // 一般成員可以建立頻道
+    b.c.create_channel("小隊");
+    let ch = match next_event(&mut a.ev).await {
+        ClientEvent::ChannelAdded(c) => c.id,
+        e => panic!("預期 ChannelAdded，收到 {e:?}"),
+    };
+    let _ = next_event(&mut b.ev).await;
+
+    // 但不能改名、不能刪除
+    for op in 0..2 {
+        if op == 0 {
+            b.c.rename_channel(ch, "亂改");
+        } else {
+            b.c.delete_channel(ch);
+        }
+        match next_event(&mut b.ev).await {
+            ClientEvent::HostError(code, _) => assert_eq!(code, ErrorCode::Forbidden),
+            e => panic!("預期 Forbidden，收到 {e:?}"),
+        }
+    }
+    assert!(room.host.channels().iter().any(|c| c.id == ch && c.name == "小隊"), "頻道不能被改動");
+
+    // 房主可以
+    a.c.rename_channel(ch, "突擊隊");
+    assert_eq!(next_event(&mut b.ev).await, ClientEvent::ChannelRenamed(ch, "突擊隊".into()));
+    a.c.delete_channel(ch);
+    assert_eq!(next_event(&mut b.ev).await, ClientEvent::ChannelRemoved(ch));
     Ok(())
 }
 

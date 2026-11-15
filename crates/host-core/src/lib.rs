@@ -7,6 +7,9 @@
 //! 3. 上一幀還聽得到、這一幀不再聽得到的人（說話者換了頻道組合、或停止說話），補送 end-of-stream
 //!
 //! 同一個 NodeId 重新連線時沿用原本的 `session_idx`（為 M3 房主轉移鋪路）。
+//!
+//! 權限：設定了 [`HostConfig::owner`] 時，只有房主本人（以 NodeId 判斷）能改名／刪除頻道；
+//! 建立頻道所有人都可以。
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -37,6 +40,8 @@ pub struct HostConfig {
     pub secret: RoomSecret,
     pub term: u64,
     pub max_members: usize,
+    /// 房主自己的成員身分（NodeId）。Some 時只有他能改名／刪除頻道；None = 不限制（測試用）
+    pub owner: Option<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -332,6 +337,15 @@ impl Host {
         }
     }
 
+    /// 房主才能做的操作
+    fn require_owner(&self, st: &State, idx: SessionIdx, why: &'static str) -> Result<(), (ErrorCode, &'static str)> {
+        match self.cfg.owner {
+            None => Ok(()),
+            Some(owner) if st.members.get(&idx).is_some_and(|m| m.info.node_id == owner) => Ok(()),
+            Some(_) => Err((ErrorCode::Forbidden, why)),
+        }
+    }
+
     fn on_control(
         &self,
         idx: SessionIdx,
@@ -383,12 +397,14 @@ impl Host {
                 st.broadcast(HostMsg::ChannelAdded(ChannelInfo { id, name }));
             }
             ClientMsg::RenameChannel { channel, name } => {
+                self.require_owner(&st, idx, "只有房主可以改頻道名稱")?;
                 let name = sanitize(&name, MAX_CHANNEL_NAME_CHARS, "新頻道");
                 let slot = st.channels.get_mut(&channel).ok_or((ErrorCode::NoSuchChannel, "頻道不存在"))?;
                 *slot = name.clone();
                 st.broadcast(HostMsg::ChannelRenamed { channel, name });
             }
             ClientMsg::DeleteChannel { channel } => {
+                self.require_owner(&st, idx, "只有房主可以刪除頻道")?;
                 if channel == DEFAULT_CHANNEL {
                     return Err((ErrorCode::Forbidden, "大廳不能刪除"));
                 }
