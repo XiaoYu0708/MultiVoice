@@ -7,5 +7,6 @@ publish.workspace = true
 
 [dependencies]
 cpal = "0.18"
+nnnoiseless = { version = "0.5.2", default-features = false }
 opus = "0.3"
 rtrb = "0.4"

@@ -13,12 +13,14 @@
 //!   --buffer <ms>        輸出緩衝目標（預設 20）
 //!   --gain <倍數>        輸出增益（預設 1.0；0 = 靜音，仍會量測）
 //!   --seconds <秒>       執行秒數（預設：按 Enter 結束）
+//!   --no-denoise         關閉 RNNoise 降噪（預設開啟）
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use audio::codec::{Decoder, Encoder, FRAME_SAMPLES, MAX_PACKET, SAMPLE_RATE};
+use audio::denoise::Denoiser;
 use audio::device::{self, OnsetDetector, StreamStats};
 
 struct Opts {
@@ -29,6 +31,7 @@ struct Opts {
     buffer_ms: u32,
     gain: f32,
     seconds: Option<u64>,
+    denoise: bool,
 }
 
 fn parse_args() -> Opts {
@@ -40,6 +43,7 @@ fn parse_args() -> Opts {
         buffer_ms: 20,
         gain: 1.0,
         seconds: None,
+        denoise: true,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -52,6 +56,7 @@ fn parse_args() -> Opts {
             "--buffer" => o.buffer_ms = val().parse().expect("--buffer"),
             "--gain" => o.gain = val().parse().expect("--gain"),
             "--seconds" => o.seconds = Some(val().parse().expect("--seconds")),
+            "--no-denoise" => o.denoise = false,
             "-h" | "--help" => {
                 println!("見 crates/audio/examples/loopback.rs 開頭的說明");
                 std::process::exit(0);
@@ -121,8 +126,9 @@ fn main() -> Result<(), device::Error> {
     println!("輸入：{}（{in_ch} ch）", device::device_name(&in_dev));
     println!("輸出：{}（{out_ch} ch）", device::device_name(&out_dev));
     println!(
-        "位元率 {} kbps｜模擬掉包 {}%｜輸出緩衝目標 {} ms｜增益 {}",
-        o.bitrate / 1000, o.loss_pct, o.buffer_ms, o.gain
+        "位元率 {} kbps｜模擬掉包 {}%｜輸出緩衝目標 {} ms｜增益 {}｜降噪 {}",
+        o.bitrate / 1000, o.loss_pct, o.buffer_ms, o.gain,
+        if o.denoise { "開（RNNoise，多約 10 ms 延遲）" } else { "關" }
     );
     println!("請戴耳機。對麥克風拍手或彈一下（間隔 0.5 秒以上）即可量測端到端延遲。");
     match o.seconds {
@@ -141,6 +147,9 @@ fn main() -> Result<(), device::Error> {
     }
 
     let mut enc = Encoder::new(o.bitrate)?;
+    let mut denoiser = o.denoise.then(Denoiser::new);
+    let mut post_peak = 0f32; // 降噪後（送進編碼器前）的峰值
+    let (mut vad_sum, mut vad_n) = (0f32, 0u32);
     let mut dec = Decoder::new()?;
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut frame = Vec::with_capacity(FRAME_SAMPLES);
@@ -168,6 +177,11 @@ fn main() -> Result<(), device::Error> {
                 continue;
             }
             let t = Instant::now();
+            if let Some(d) = denoiser.as_mut() {
+                vad_sum += d.process(&mut frame);
+                vad_n += 1;
+            }
+            post_peak = frame.iter().fold(post_peak, |m, v| m.max(v.abs()));
             let mut pkt = [0u8; MAX_PACKET];
             let n = enc.encode(&frame, &mut pkt)?;
             frame.clear();
@@ -255,8 +269,10 @@ fn main() -> Result<(), device::Error> {
             last_report = Instant::now();
             let kbps = ps.bytes as f64 * 8.0 / (ps.frames.max(1) as f64 * 0.02) / 1000.0;
             println!(
-                "麥克風 {} dBFS｜輸出緩衝 {:4.1} ms｜輸出裝置 {:4.1} ms｜欠載 {}｜溢位 {}｜漂移修正 {}｜{:4.1} kbps｜掉包 {}（FEC {}，PLC {}）",
+                "麥克風 {} → 降噪後 {} dBFS（人聲 {:.2}）｜輸出緩衝 {:4.1} ms｜輸出裝置 {:4.1} ms｜欠載 {}｜溢位 {}｜漂移修正 {}｜{:4.1} kbps｜掉包 {}（FEC {}，PLC {}）",
                 dbfs(in_stats.take_peak()),
+                dbfs(std::mem::take(&mut post_peak)),
+                if vad_n > 0 { vad_sum / vad_n as f32 } else { f32::NAN },
                 fill_of(&out_prod) as f64 * 1000.0 / SAMPLE_RATE as f64,
                 out_stats.device_latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
                 out_stats.xruns.load(Ordering::Relaxed),
@@ -266,6 +282,7 @@ fn main() -> Result<(), device::Error> {
                 ps.lost, ps.fec, ps.plc,
             );
             let _ = out_stats.take_peak();
+            (vad_sum, vad_n) = (0.0, 0);
         }
 
         std::thread::sleep(Duration::from_millis(1));
