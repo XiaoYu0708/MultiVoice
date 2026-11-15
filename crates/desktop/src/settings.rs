@@ -102,6 +102,8 @@ impl Settings {
             strong_denoise: self.strong_denoise,
             volume: self.output_volume,
             cues: self.cues,
+            // 進房時麥克風預設關閉（使用者要求，2026-11-16）
+            start_muted: true,
             ..Default::default()
         }
     }

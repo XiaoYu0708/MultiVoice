@@ -262,6 +262,10 @@ impl Session {
         // 全域按鍵（PTT／廣播／靜音）；失敗不影響其他功能
         let hotkey_err = hotkeys::start().err();
         let shared = Arc::new(Shared::new());
+        // 在音訊啟動前設定，擷取執行緒一開始就是靜音狀態（不會響「關麥」提示音）
+        if audio.start_muted {
+            shared.set_muted(true);
+        }
         let room = Arc::new(Mutex::new(RoomState::default()));
         let log: takeover::Log = {
             let room = room.clone();

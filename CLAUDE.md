@@ -79,7 +79,8 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`、`--auto-update`（搭配 `MULTIVOICE_TEST_VERSION=0.0.1`，找到新版就直接更新）、
   `--restarted`（自己重新啟動自己時帶：等舊程式結束，不是叫醒它）。**同一個設定檔只能開一個**，測試時多開要用不同的 `--profile`
 - 一鍵更新實測：把 exe 複製到暫存資料夾再跑（會被換成 GitHub 上的最新版），不要在 target 目錄裡直接測
-  （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）
+  （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）。
+  **桌面版與網頁版進房時麥克風預設靜音**（使用者要求，`AudioOpts::start_muted`），要驗證「送出中」得先按取消靜音；CLI 不受影響
 - **UI 自動點擊前一定要確認 MultiVoice 是前景視窗**，否則會點到使用者的其他視窗；使用者正在用電腦時（例如剪貼簿內容變了）就停止自動點擊
 - 測試會在 `%APPDATA%\MultiVoice\` 產生 `identity-<profile>.key`、`settings-<profile>.toml`，**測完要刪掉測試用的**（保留 `identity-default.key`、`identity-test2.key`、`settings.toml`）。
 - **網頁版驗證**：`node tools/headless.mjs <網址> <秒> [--mobile] --eval "js" --eval sleep:N --shot 圖.png`（無頭 Chrome、假麥克風、自動允許權限；不需要 Chrome 擴充功能）。搭配背景的 CLI 房主與 `tools/build-web.sh --serve`

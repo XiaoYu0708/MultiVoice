@@ -97,6 +97,8 @@ pub struct Engine {
     seq: u32,
     prev_ptt: u64,
     prev_muted: bool,
+    /// 第一幀只記下目前狀態，不播提示音（進房時預設靜音，不要一進來就響）
+    primed: bool,
     /// 要送出的封包：重複的 `[u16 長度][上行封包]`
     pub outbox: Vec<u8>,
     // 播放
@@ -141,6 +143,7 @@ impl Engine {
             seq: 0,
             prev_ptt: 0,
             prev_muted: false,
+            primed: false,
             outbox: Vec::new(),
             samples: 0,
             speakers: BTreeMap::new(),
@@ -223,7 +226,9 @@ impl Engine {
             ptt_held: ptt,
             muted,
         });
-        if muted != self.prev_muted {
+        if !self.primed {
+            self.primed = true;
+        } else if muted != self.prev_muted {
             self.cue(if muted { Cue::Muted } else { Cue::Unmuted });
         } else if !muted && (ptt == 0) != (self.prev_ptt == 0) {
             let slot = |m: u64| m.trailing_zeros() as u8;

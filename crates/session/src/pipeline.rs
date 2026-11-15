@@ -58,6 +58,8 @@ pub struct AudioOpts {
     pub volume: f32,
     /// 開／關麥提示音
     pub cues: bool,
+    /// 進房時麥克風先靜音（桌面版預設開；要說話時自己打開）
+    pub start_muted: bool,
 }
 
 impl Default for AudioOpts {
@@ -75,6 +77,7 @@ impl Default for AudioOpts {
             buffer_ms: 30,
             volume: 1.0,
             cues: true,
+            start_muted: false,
         }
     }
 }

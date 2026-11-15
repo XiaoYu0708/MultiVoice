@@ -85,6 +85,10 @@ const MOBILE = IOS || /Android/i.test(navigator.userAgent);
 let micWanted = false;
 
 async function startAudio() {
+  // every join starts with the mic off (user preference, 2026-11-16); tap 「麥克風已關」 to talk
+  muted = true;
+  deafened = false;
+  renderToggles();
   // Safari 16.4+: tell iOS this is a call (mic + playback together)
   setAudioSession('play-and-record');
   ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
