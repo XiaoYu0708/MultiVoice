@@ -439,6 +439,13 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
   - 可再壓低的地方：輸出緩衝目標 20 → 10 ms；WASAPI 輸出裝置延遲約 32 ms，可評估 IAudioClient3 低延遲模式或獨佔模式（M5）
 - [x] 確認 libopus 能在 `x86_64-pc-windows-gnu` 工具鏈下靜態編譯（2026-11-15：32 kbps 平均封包 82.7 bytes，release 版編+解碼每幀 0.32 ms）
 - [ ] iroh datagram：兩台不同網路的電腦互傳，分別量測直連與經 relay 的 RTT 和遺失率；測試公共 relay 長時間傳一路語音會不會被限流
+  - 工具：`crates/netprobe`（`listen` / `connect <EndpointId>` / `local`，可加 `--relay-only`），每 20 ms 送 100 bytes 模擬語音
+  - 2026-11-15 本機互測（iroh 1.4.1）：
+    - 直連：RTT 中位數 0.3 ms，0% 掉包，連線建立 1 ms，啟動後 1 秒內選定直連
+    - 強制經 n0 公共 relay（自動選到 `aps1` 新加坡）：RTT 最小 150 ms、**中位數 238 ms、p95 410 ms**、抖動 28 ms、0% 掉包（20 秒 1000 包）。本機互測走了 4 趟台灣↔新加坡，實際「成員→relay→房主」約為一半
+    - 沒有出現限流警告；中位數比最小值高約 90 ms 且起伏大，推測是 relay 路徑（TCP/WebSocket）上的排隊
+    - **結論：公共 relay 對台灣玩家太遠，自架 relay（§7.3）是必要的，不只是備案**
+  - [ ] 尚未完成：兩台不同網路的電腦互測（驗證打洞成功率與真實 RTT）
 - [ ] iroh WASM 在 Chrome Android / iOS Safari 能否連上（只驗證連線）
 - [ ] 這台電腦：Cloudflare 新增 `voice.` / `relay.` 灰雲 A 紀錄 → Docker 起 `caddy` + `iroh-relay`，確認 HTTPS 憑證自動申請成功、瀏覽器能經 WSS 連上 relay
 - [ ] Docker Desktop 內 UDP 的直連效果（決定 `headless-host` 放 Docker 還是 Windows 原生）

@@ -1,0 +1,12 @@
+[package]
+name = "netprobe"
+description = "M0 網路探測：iroh datagram 來回時間、掉包率、直連/relay 路徑"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+iroh = "1"
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
