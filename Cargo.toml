@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/audio", "crates/mixer-core", "crates/netprobe"]
+members = [
+    "crates/protocol",
+    "crates/audio",
+    "crates/mixer-core",
+    "crates/transport",
+    "crates/host-core",
+    "crates/client-core",
+    "crates/netprobe",
+]
 
 [workspace.package]
 version = "0.1.0"

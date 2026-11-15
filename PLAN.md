@@ -563,6 +563,7 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
 - 工具鏈：`stable-x86_64-pc-windows-gnu`（cargo 1.99.1）；網頁版另外需要 `rustup target add wasm32-unknown-unknown` 與 `wasm-bindgen-cli`
 - C 工具：WinLibs 提供 gcc 16.2、cmake 4.4、ninja（編譯 libopus 會用到）
   - cmake 4.x 不接受 `cmake_minimum_required < 3.5`，而 `audiopus_sys` 內附的 libopus 正是如此，所以 `.cargo/config.toml` 的 `[env]` 設定了 `CMAKE_POLICY_VERSION_MINIMUM = "3.5"`。在其他電腦建置時也需要這個環境變數
+  - iroh 宣告 `crate-type = ["lib", "cdylib"]`，Cargo 會連帶把它連結成 DLL；GNU ld 在 windows-gnu 上自動匯出所有符號，debug 版超過 PE 的 65535 上限（`export ordinal too large`）。`.cargo/config.toml` 加了 `[target.x86_64-pc-windows-gnu] rustflags = ["-C", "link-arg=-Wl,--exclude-all-symbols"]`
 - 網路：**固定公開 IP**；網域 `xiaoyu0708.ip-ddns.com`（DNS 在 Cloudflare），新增 `voice.` / `relay.` 兩筆灰雲 A 紀錄，由 Caddy 自動申請 HTTPS 憑證（§7.3）
 - Docker Desktop 29.x（WSL2）：跑 `caddy`、`iroh-relay`、`headless-host`（可選，§7.3）；放在 `deploy/docker-compose.yml`
 - **中文路徑問題**：專案位於 `遊戲\` 底下，rustup 內建的 mingw `ld` 無法處理非 ASCII 路徑。比照 `副本退出快捷腳本`，建立 `.cargo/config.toml`：

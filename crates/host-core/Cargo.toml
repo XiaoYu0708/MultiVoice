@@ -1,0 +1,15 @@
+[package]
+name = "host-core"
+description = "MultiVoice 房主邏輯：加入驗證、成員管理、語音扇出（無 UI、無音訊）"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+iroh = "1"
+protocol = { version = "0.1.0", path = "../protocol" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+transport = { version = "0.1.0", path = "../transport" }
