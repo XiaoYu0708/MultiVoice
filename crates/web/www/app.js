@@ -14,8 +14,6 @@ const join64 = (lo, hi) => (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
 // ---------------------------------------------------------------- state
 let room = null;
 let ctx = null, node = null, micStream = null, micSource = null, wakeLock = null;
-/** iPhone background mode 2: the engine output goes through an <audio> element (media playback) */
-let mediaOut = null;
 let state = null;              // last Room.state() JSON
 let audioStatus = null;        // last status from the worklet
 let muted = false, deafened = false;
@@ -25,10 +23,6 @@ const settings = {
   gate: store.get('gate', -50),
   cues: store.get('cues', true),
   wakelock: store.get('wakelock', true),
-  // iPhone in the background: 0 = off, 1 = keep playing via Web Audio, 2 = play through a media element
-  bgListen: store.get('bgListen', 1),
-  // iPhone: how to keep talking in the background — 0 = floating window, 1 = local WebRTC call (experiment)
-  bgTalk: store.get('bgTalk', 0),
 };
 /** channel id -> { mode, listen, volume } for channels I joined */
 const joined = new Map();
@@ -86,6 +80,7 @@ function showJoinError(msg) {
 // ?ios in the URL: test the iPhone code paths on another browser
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   || new URLSearchParams(location.search).has('ios');
+const MOBILE = IOS || /Android/i.test(navigator.userAgent);
 /** the user granted the mic once: try to bring it back automatically after the OS paused it */
 let micWanted = false;
 
@@ -107,16 +102,7 @@ async function startAudio() {
   node = new AudioWorkletNode(ctx, 'mv-engine', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
   node.port.onmessage = (e) => onWorklet(e.data);
   node.port.postMessage({ t: 'wasm', bytes }, [bytes]);
-  if (IOS && settings.bgListen === 2) {
-    // play through a media element: iOS lets media keep playing in the background
-    const dest = ctx.createMediaStreamDestination();
-    node.connect(dest);
-    mediaOut = new Audio();
-    mediaOut.srcObject = dest.stream;
-    mediaOut.play().catch(() => {});
-  } else {
-    node.connect(ctx.destination);
-  }
+  node.connect(ctx.destination);
   if ('mediaSession' in navigator) {
     try { navigator.mediaSession.metadata = new MediaMetadata({ title: 'MultiVoice', artist: '語音房間' }); } catch {}
   }
@@ -138,7 +124,8 @@ async function enableMic() {
     if (!ctx || !node) { stream.getTracks().forEach((t) => t.stop()); return; }
     micStream = stream;
     micWanted = true;
-    if (IOS && settings.bgTalk === 1) startRtcKeepAlive(stream.getAudioTracks()[0]);
+    // phones: keep talking after switching to a game or locking the screen (see startRtcKeepAlive)
+    if (MOBILE) startRtcKeepAlive(stream.getAudioTracks()[0]);
     micSource = ctx.createMediaStreamSource(stream);
     micSource.connect(node);
     const track = stream.getAudioTracks()[0];
@@ -169,7 +156,6 @@ function stopAudio() {
   micStream?.getTracks().forEach((t) => t.stop());
   micStream = null;
   micWanted = false;
-  if (mediaOut) { mediaOut.pause(); mediaOut.srcObject = null; mediaOut = null; }
   try { node?.disconnect(); } catch {}
   node = null;
   ctx?.close().catch(() => {});
@@ -237,24 +223,15 @@ function enterRoom() {
   eventLoop(room);
   voiceLoop(room);
   setWakeLock(settings.wakelock);
-  $('#ios-note').hidden = !IOS;
-  if (IOS && settings.bgTalk === 1) {
-    $('#ios-note').textContent = '實驗中：「通話連線」模式，直接切到遊戲試試還能不能說話；不行的話到「音訊設定」改回浮動視窗。';
-  }
-  if (pipSupported()) {
-    $('#pip-row').hidden = false;
-    $('#pip-note').hidden = false;
-    // iPhone: the floating window is how you talk while gaming, so make it the obvious button
-    $('#pip-btn').className = IOS ? 'primary' : 'ghost';
-    startPip();
-  }
+  $('#mobile-note').hidden = !MOBILE;
 }
 
-// ---------------------------------------------------------------- local WebRTC "call" (experiment)
-// Discord's web client keeps talking in the iPhone background without a floating window because it is a WebRTC
-// call. Our audio does not go through WebRTC, so build a call that never leaves the phone (two peer connections
-// in this page) and attach the mic track to it, hoping iOS then treats the page as a call. Audio itself still goes
-// through our own engine and connection.
+// ---------------------------------------------------------------- keep talking in the background (phones)
+// iOS stops recording from a page in the background, unless the page is in a WebRTC call (that is how Discord's web
+// client keeps working). Our audio does not use WebRTC, so we build a call that never leaves the phone (two peer
+// connections in this page) and attach the mic track to it; iOS then treats the page as a call and keeps the mic
+// and playback running. Audio itself still goes through our own engine and connection.
+// Verified on iPhone 2026-11-16: switching to a game or locking the screen keeps both talking and listening.
 let rtc = null;
 
 function rtcActive() {
@@ -279,8 +256,7 @@ async function startRtcKeepAlive(track) {
     a.addTrack(track, new MediaStream([track]));
     a.onconnectionstatechange = () => {
       if (rtc !== me) return;
-      if (a.connectionState === 'connected') log('通話連線已建立（背景說話實驗）');
-      if (a.connectionState === 'failed') log('通話連線失敗');
+      if (a.connectionState === 'failed') log('背景通話連線失敗：切到其他 App 時可能會斷麥克風');
     };
     const offer = await a.createOffer();
     await a.setLocalDescription(offer);
@@ -289,103 +265,10 @@ async function startRtcKeepAlive(track) {
     await b.setLocalDescription(answer);
     await a.setRemoteDescription(answer);
   } catch (ex) {
-    log('無法建立通話連線：' + (ex.message || ex));
+    log('無法建立背景通話連線：' + (ex.message || ex));
     if (rtc === me) stopRtcKeepAlive();
   }
 }
-
-// ---------------------------------------------------------------- floating window (Picture-in-Picture)
-// A small canvas-backed video that shows mic state and who is talking. Safari can float it over other apps;
-// while it floats we keep the microphone (enterBackground), to test whether iOS keeps recording.
-let pip = null;
-
-function pipSupported() {
-  const v = document.createElement('video');
-  return !!(document.pictureInPictureEnabled || typeof v.webkitSetPresentationMode === 'function')
-    && typeof HTMLCanvasElement.prototype.captureStream === 'function';
-}
-
-function pipActive() {
-  if (!pip) return false;
-  return document.pictureInPictureElement === pip.video || pip.video.webkitPresentationMode === 'picture-in-picture';
-}
-
-function startPip() {
-  if (pip) return;
-  const canvas = document.createElement('canvas');
-  canvas.width = 480; canvas.height = 270;
-  const video = $('#pip-video');
-  video.autoPictureInPicture = true;
-  pip = { canvas, video, g: canvas.getContext('2d'), timer: 0 };
-  drawPip();
-  video.srcObject = canvas.captureStream(10);
-  video.play().catch(() => {});
-  // timers keep running in the floating window; requestAnimationFrame would not
-  pip.timer = setInterval(drawPip, 200);
-  const onChange = () => { $('#pip-btn').textContent = pipActive() ? '關閉浮動視窗' : '開啟浮動視窗'; };
-  video.addEventListener('enterpictureinpicture', onChange);
-  video.addEventListener('leavepictureinpicture', onChange);
-  video.addEventListener('webkitpresentationmodechanged', onChange);
-}
-
-function stopPip() {
-  if (!pip) return;
-  clearInterval(pip.timer);
-  if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
-  pip.video.srcObject = null;
-  pip = null;
-}
-
-function drawPip() {
-  if (!pip) return;
-  const { g, canvas } = pip;
-  const st = audioStatus;
-  g.fillStyle = '#16181d';
-  g.fillRect(0, 0, canvas.width, canvas.height);
-  g.font = 'bold 30px system-ui, sans-serif';
-  g.fillStyle = '#e9ebf0';
-  g.fillText('MultiVoice', 24, 50);
-  const talking = st && st.active && !muted && !deafened;
-  let mic = !micStream ? '麥克風：關閉' : muted || deafened ? '麥克風：靜音' : talking ? '送出中' : '麥克風：安靜';
-  if (micStream?.getAudioTracks()[0]?.muted) mic = '麥克風：系統暫停';
-  g.font = 'bold 34px system-ui, sans-serif';
-  g.fillStyle = talking ? '#43b581' : muted || deafened || !micStream ? '#dc5046' : '#9aa0ad';
-  g.fillText(mic, 24, 110);
-  // level bar
-  const lvl = st && micStream ? Math.max(0, Math.min(1, (st.level + 70) / 70)) : 0;
-  g.fillStyle = '#272b34';
-  g.fillRect(24, 130, canvas.width - 48, 14);
-  g.fillStyle = st?.voiced ? '#43b581' : '#4278dc';
-  g.fillRect(24, 130, (canvas.width - 48) * lvl, 14);
-  // who is talking
-  const names = st && state ? [...st.speaking.keys()].map(memberName) : [];
-  g.font = '28px system-ui, sans-serif';
-  g.fillStyle = names.length ? '#43b581' : '#9aa0ad';
-  g.fillText(names.length ? '說話中：' + names.join('、') : '沒人說話', 24, 200, canvas.width - 48);
-}
-
-// Must request synchronously inside the tap: iOS rejects it after any await ("not triggered by a user activation")
-$('#pip-btn').addEventListener('click', () => {
-  if (!pip) startPip();
-  const v = pip.video;
-  const fail = (ex) => log('無法開啟浮動視窗：' + (ex?.message || ex));
-  try {
-    if (pipActive()) {
-      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(fail);
-      else v.webkitSetPresentationMode('inline');
-      return;
-    }
-    if (v.paused) v.play().catch(() => {});
-    // Safari (iOS) has its own synchronous API; use the standard one elsewhere
-    if (typeof v.webkitSetPresentationMode === 'function' && v.webkitSupportsPresentationMode?.('picture-in-picture')) {
-      v.webkitSetPresentationMode('picture-in-picture');
-    } else if (v.requestPictureInPicture) {
-      v.requestPictureInPicture().catch(fail);
-    } else {
-      fail('這個瀏覽器不支援');
-    }
-  } catch (ex) { fail(ex); }
-});
 
 async function eventLoop(r) {
   for (;;) {
@@ -408,7 +291,6 @@ async function voiceLoop(r) {
 }
 
 async function exitRoom(reason) {
-  stopPip();
   const r = room;
   room = null;
   state = null;
@@ -667,10 +549,6 @@ bindSetting('volume', 'volume', (v) => Math.round(v * 100) + '%', pushSettings);
 bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudio(); });
 bindSetting('cues', 'cues', null, pushSettings);
 bindSetting('wakelock', 'wakelock', null, (on) => setWakeLock(on && !!room));
-bindSetting('bgListen', 'bgListen', null, null);
-bindSetting('bgTalk', 'bgTalk', null, null);
-$('#bg-listen-row').hidden = !IOS;
-$('#bg-talk-row').hidden = !IOS;
 renderToggles();
 
 async function setWakeLock(on) {
@@ -689,7 +567,6 @@ async function recoverAudio() {
   if (!room || !ctx) return;
   setAudioSession('play-and-record');
   try { await ctx.resume(); } catch {}
-  mediaOut?.play().catch(() => {});
   const t = micStream?.getAudioTracks()[0];
   if (micWanted && (!t || t.readyState === 'ended' || t.muted)) {
     // give iOS a moment to un-pause the track by itself
@@ -703,30 +580,7 @@ function setAudioSession(type) {
   try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {}
 }
 
-/**
- * iPhone going to the background: Safari will not record from a background page, and while the page holds the mic
- * it pauses all audio. Release the mic and switch to "playback" so others can still be heard (experimental;
- * the mic comes back automatically in recoverAudio()).
- */
-function enterBackground() {
-  if (!IOS || !room || !ctx || settings.bgListen === 0) return;
-  // floating window open: iOS keeps recording, so keep the mic (verified on iPhone 2026-11-16)
-  if (pipActive()) return;
-  // local WebRTC call active: iOS may treat the page as a call and keep recording (experiment)
-  if (rtcActive()) return;
-  if (micStream) {
-    micStream.getTracks().forEach((t) => t.stop());
-    try { micSource?.disconnect(); } catch {}
-    micStream = null;
-    micSource = null;
-  }
-  setAudioSession('playback');
-  ctx.resume().catch(() => {});
-  mediaOut?.play().catch(() => {});
-}
-
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') enterBackground();
   if (document.visibilityState === 'visible') {
     setWakeLock(settings.wakelock);
     recoverAudio();

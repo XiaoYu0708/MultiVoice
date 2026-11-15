@@ -156,10 +156,7 @@
 - [x] 已部署（2026-11-16）：`tools/build-web.sh --deploy` 後 `MSYS_NO_PATHCONV=1 docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile`（在 deploy/ 執行；Git Bash 要關路徑轉換）。正式網址端對端測試通過。之後更新網頁版前**先問使用者**
 - [x] 使用者實測（2026-11-16）：手機（網頁版）與電腦（桌面版）在**不同網路**下可以正常通話
 - [x] 使用者回報（2026-11-16）：iPhone 鎖定或切到其他 App 時，麥克風指示燈仍亮但雙向都沒聲音——iOS Safari 在背景會暫停網頁音訊，網頁無法繞過（PLAN §8.2）。已改善：回到前景時自動恢復 AudioContext、麥克風被暫停／停掉就自動重開（不行才顯示按鈕）、iPhone 在房間畫面顯示說明、試用 `navigator.audioSession.type = 'play-and-record'`。要背景通話只能做原生 App
-- [ ] **iPhone 背景只收聽（實驗，待使用者實測）**：使用者可以接受背景時只聽不說。切到背景時放掉麥克風、`audioSession.type = 'playback'`，回到前景自動開回麥克風（`play-and-record`）。「音訊設定」可選方式一（Web Audio 直接播）或方式二（`MediaStreamDestination` → `<audio>`，走媒體播放）；網址加 `?ios` 可在其他瀏覽器測 iPhone 流程
-- [x] 使用者實測（2026-11-16）：iPhone 背景**收聽正常**（方式一）
-- [x] **浮動視窗（子母畫面）**：使用者實測（2026-11-16）**iPhone 開浮動視窗後鎖定或切到其他 App，都能繼續說話和收聽**。做法：canvas.captureStream → `<video>`，顯示麥克風狀態與誰在說話；浮動視窗開著時切到背景不放掉麥克風。**一定要在按下的當下同步呼叫**（iOS 用 `webkitSetPresentationMode`；先 await 會被拒絕「not triggered by a user activation」），所以 `autopictureinpicture` 自動浮動在 iOS 沒用，要使用者先按按鈕。iPhone 上按鈕用醒目樣式並提示
-- [ ] **「通話連線」實驗（待實測）**：使用者發現 Discord 網頁版不用浮動視窗也能在背景說話（Discord 走 WebRTC）。做法：頁面內兩個 RTCPeerConnection 互連、把麥克風 track 掛上去，讓 iOS 把頁面當成通話；聲音仍走自己的引擎與連線。「音訊設定 → iPhone 在遊戲中說話的方式」選「通話連線」（`bgTalk = 1`），開著時切到背景不放掉麥克風
+- [x] **手機在背景繼續說話與收聽**（2026-11-16，使用者 iPhone 實測可以）：iOS 在背景不讓一般網頁收音，但 WebRTC 通話例外（Discord 網頁版就是這樣）。做法：頁面內兩個 RTCPeerConnection 互連、把麥克風 track 掛上去，iOS 就把頁面當成通話；聲音仍走自己的引擎與連線（`app.js` 的 `startRtcKeepAlive`，iPhone 與 Android 都開）。先前試過的浮動視窗（子母畫面，可行但每次要按）與「背景只收聽」都已移除。網址加 `?ios` 可在電腦瀏覽器測手機流程
 - [ ] 細項還沒回報：Android 背景（不同廠牌省電機制）、回到前景後是否自動恢復、喇叭回音、耗電
 - iPhone 原生 App：使用者沒有 Mac；浮動視窗已能邊玩邊講，暫不需要
 - [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）

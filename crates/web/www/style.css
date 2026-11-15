@@ -157,8 +157,6 @@ button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 5
 .new-channel { display: flex; gap: 8px; margin-top: 12px; }
 .new-channel input { flex: 1; }
 
-.pip-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-#pip-video { width: 128px; height: 72px; border-radius: 6px; background: #000; border: 1px solid var(--line); }
 .settings summary { cursor: pointer; font-weight: 600; }
 .settings[open] summary { margin-bottom: 12px; }
 
