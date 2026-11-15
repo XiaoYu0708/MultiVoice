@@ -58,6 +58,13 @@ pub struct App {
     update_rx: Option<mpsc::Receiver<Option<update::Release>>>,
     /// 有新版本（使用者按「稍後」就清掉）
     update: Option<update::Release>,
+    /// 一鍵更新進行中
+    install: Option<update::Install>,
+    install_err: Option<String>,
+    /// 測試用：找到新版就直接更新
+    auto_update: bool,
+    /// 更新後重新啟動：關閉視窗時不要縮到系統匣
+    exiting: bool,
     /// 麥克風測試（開著時記下用的是哪組裝置，換了就重開）
     mic_test: Option<(session::mictest::MicTest, Option<String>, Option<String>)>,
     /// 麥克風測試時播放自己的聲音
@@ -77,18 +84,20 @@ enum Auto {
 }
 
 impl App {
-    /// 命令列參數（測試用）：`--profile 名稱`、`--auto-host`、`--auto-join 邀請票`、`--deafen`
+    /// 命令列參數（測試用）：`--profile 名稱`、`--auto-host`、`--auto-join 邀請票`、`--deafen`、`--auto-update`
     pub fn new(rt: tokio::runtime::Runtime, tray: Option<std::sync::Arc<Tray>>) -> Self {
         let mut args = std::env::args().skip(1);
         let mut profile = "default".to_string();
         let mut auto = None;
         let mut start_deafened = false;
+        let mut auto_update = false;
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--profile" => profile = args.next().unwrap_or(profile),
                 "--auto-host" => auto = Some(Auto::Host),
                 "--auto-join" => auto = args.next().map(Auto::Join),
                 "--deafen" => start_deafened = true,
+                "--auto-update" => auto_update = true,
                 _ => {}
             }
         }
@@ -124,6 +133,10 @@ impl App {
             preset_msg: None,
             update_rx: Some(update::spawn_check()),
             update: None,
+            install: None,
+            install_err: None,
+            auto_update,
+            exiting: false,
             mic_test: None,
             mic_monitor: false,
             mic_test_err: None,
@@ -177,7 +190,7 @@ impl App {
             return;
         }
         let Some(t) = &self.tray else { return };
-        if self.session.is_some() && self.settings.close_to_tray && !t.quit_requested() {
+        if self.session.is_some() && self.settings.close_to_tray && !t.quit_requested() && !self.exiting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             t.hide_main(!self.tray_notified);
             self.tray_notified = true;
@@ -384,7 +397,7 @@ impl App {
             ui.colored_label(RED, format!("按鍵說話無法使用：{e}"));
         } else if !hotkeys::is_admin() {
             ui.weak("如果遊戲以系統管理員身分執行，這裡也要以管理員身分執行，否則遊戲在前景時收不到按鍵");
-            if ui.small_button("以系統管理員身分重新啟動").clicked() && hotkeys::relaunch_as_admin() {
+            if ui.small_button("以系統管理員身分重新啟動").clicked() && hotkeys::relaunch_as_admin(&[crate::instance::RESTARTED]) {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
@@ -610,24 +623,63 @@ impl App {
         }
     }
 
-    /// 有新版本時的提示列
-    fn update_banner(&mut self, ui: &mut egui::Ui) {
+    /// 有新版本時的提示列：一鍵更新（下載 → 換檔 → 重新啟動，在房間裡的話重新啟動後自動加入）
+    fn update_banner(&mut self, ui: &mut egui::Ui, snap: Option<&Snapshot>) {
         let Some(r) = self.update.clone() else { return };
+        if self.auto_update && self.install.is_none() && self.install_err.is_none() {
+            self.auto_update = false;
+            if let Some(a) = r.asset.clone() {
+                self.install = Some(update::spawn_install(a));
+            }
+        }
+        // 下載完成：重新啟動
+        if let Some(res) = self.install.as_ref().and_then(|i| i.poll()) {
+            self.install = None;
+            let rejoin = snap.map(|s| s.ticket.clone());
+            match res.and_then(|exe| update::restart(&exe, rejoin.as_deref()).map_err(|e| format!("無法啟動新版本：{e}"))) {
+                Ok(()) => {
+                    self.exiting = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(e) => self.install_err = Some(e),
+            }
+        }
         egui::Frame::group(ui.style()).fill(AMBER.gamma_multiply(0.25)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("有新版本 v{}", r.version)).strong().color(AMBER));
                 ui.weak(format!("（目前 v{}）", update::current()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(i) = &self.install {
+                        ui.add(egui::ProgressBar::new(i.progress()).desired_width(90.0).show_percentage());
+                        ui.weak("下載中");
+                        return;
+                    }
                     if ui.small_button("稍後").clicked() {
                         self.update = None;
                     }
-                    if ui.button("前往下載").clicked() {
+                    if ui.small_button("更新說明").clicked() {
                         update::open_url(&r.url);
+                    }
+                    if let Some(a) = &r.asset {
+                        let hint = if snap.is_some() {
+                            "下載後重新啟動，會短暫離開房間，重新啟動後自動加入"
+                        } else {
+                            "下載後自動重新啟動"
+                        };
+                        if ui.button("立即更新").on_hover_text(hint).clicked() {
+                            self.install_err = None;
+                            self.install = Some(update::spawn_install(a.clone()));
+                        }
                     }
                 });
             });
-            ui.weak("房間裡的人版本不同時可能無法連線，建議大家一起更新");
+            if let Some(e) = &self.install_err {
+                ui.colored_label(RED, format!("更新失敗：{e}"));
+                ui.weak("可以按「更新說明」到下載頁面手動下載");
+            } else {
+                ui.weak("房間裡的人版本不同時可能無法連線，建議大家一起更新");
+            }
         });
         ui.add_space(4.0);
     }
@@ -959,7 +1011,7 @@ impl eframe::App for App {
         }
         self.mic_test_shown = false;
         egui::CentralPanel::default().show(ui, |ui| {
-            self.update_banner(ui);
+            self.update_banner(ui, snap.as_ref());
             ui.horizontal(|ui| {
                 ui.heading("MultiVoice");
                 if let Some(s) = &self.session {
@@ -978,7 +1030,7 @@ impl eframe::App for App {
         if !self.mic_test_shown {
             self.mic_test = None;
         }
-        if self.recording.is_some() || self.mic_test.is_some() {
+        if self.recording.is_some() || self.mic_test.is_some() || self.install.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         } else if self.session.is_some() || self.pending.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(80));

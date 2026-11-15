@@ -9,7 +9,7 @@
 - **M4（桌面 UI）：完成**（頻道卡片、按鍵說話 PTT、提示音、系統匣、頻道設定檔）；PTT 待遊戲實測
 - **M3（房主轉移）：完成**（計畫性＋非預期轉移＋雙房主合併；剩先建後拆、候補排序、混沌測試）
 - M5：重取樣完成；M6：房主權限完成
-- **M7（網頁客戶端）：第一版完成並已部署**（2026-11-16），待手機實機測試
+- **M7（網頁客戶端）：完成並已部署**（2026-11-16；v0.5.0 桌面版有「複製網頁版連結」）；手機跨網路實測正常
 
 **GitHub**：`XiaoYu0708/MultiVoice`（公開）；發佈用 `tools/release.sh`，客戶端啟動時會提示新版本（見 CLAUDE.md「版本控制與發佈」）。
 
@@ -70,7 +70,7 @@
 
 ## 2. M0 剩下的（需要第二台在不同網路的裝置）
 - [ ] 跨網路互測：打洞成功率、真實 RTT、relay→直連切換時間（工具：`netprobe listen` / `netprobe connect <id>`，或直接用 `multivoice.exe`）
-- [ ] 瀏覽器（Chrome Android / iOS Safari）用 iroh WASM 連自架 relay
+- [x] 瀏覽器用 iroh WASM 經自架 relay 連房主（2026-11-16，M7 網頁版；使用者用手機在不同網路實測通話正常）
 - [ ] Docker Desktop 內 UDP 的直連效果（決定 `headless-host` 放 Docker 還是 Windows 原生）
 
 ## 3. M3：房主轉移（PLAN.md §5）— 第一版完成（2026-11-15）
@@ -153,13 +153,24 @@
 
 待做：
 - [x] 已部署（2026-11-16）：`tools/build-web.sh --deploy` 後 `MSYS_NO_PATHCONV=1 docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile`（在 deploy/ 執行；Git Bash 要關路徑轉換）。正式網址端對端測試通過。之後更新網頁版前**先問使用者**
-- [ ] 實機測試：iOS Safari、Android Chrome（麥克風權限、背景中斷後的「開啟麥克風」、喇叭回音、耗電）
+- [x] 使用者實測（2026-11-16）：手機（網頁版）與電腦（桌面版）在**不同網路**下可以正常通話
+- [ ] 細項還沒回報：iOS／Android 各自的情況、背景中斷後的「開啟麥克風」、喇叭回音、耗電
 - [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）
 - [ ] 網頁版的頻道左右定位、優先頻道（引擎已支援，UI 還沒放）
 - [ ] GitHub Pages 備援託管
 
-## 7. 之後
-- M8 安裝程式／自動更新、手機原生 App 評估
+## 7. M8：打磨 — 進行中
+- [x] **一鍵更新**（2026-11-16，`desktop/src/update.rs`）：提示列「立即更新」→ 下載 Release 的 `multivoice.exe` 到 `.new`、
+  核對大小與 GitHub 的 SHA-256 → 執行中的 exe 改名 `.old`、新檔換上（失敗就還原）→ 帶原參數加 `--restarted` 重新啟動；
+  在房間裡更新會帶 `--auto-join <目前的邀請票>` 自動回到房間；`.old` 下次啟動時刪掉。
+  實測：假裝 0.0.1 → 下載 v0.5.0、雜湊相符、重新啟動；在 CLI 房主的房間裡更新 → 房主看到離開又加入。
+  **v0.5.0 以前的版本沒有這個功能**，要手動下載一次 v0.6.0 之後才會自動更新
+- [x] **只開一個**（`desktop/src/instance.rs`）：每個設定檔一個具名 mutex；再執行 exe 時找原本的系統匣隱藏視窗
+  （標題 `MultiVoiceTray:<設定檔>`）送 `WM_SHOW_MAIN` 叫回視窗後結束（`AllowSetForegroundWindow`；
+  `ChangeWindowMessageFilterEx` 讓一般權限也能叫回系統管理員身分執行的那個）；`--restarted` 時改成等舊的結束（最多 15 秒）
+- [x] 網頁版拿掉頻道的「收聽」勾選（使用者要求：加入就是收聽，不想聽就離開頻道）
+- [ ] 安裝程式（開始功能表捷徑、解除安裝）：目前單一 exe 免安裝，需要再做
+- [ ] 手機原生 App 評估
 
 ## 已知小問題
 - CLI 只能用 `--channel` 在啟動時建頻道，執行中沒有頻道指令

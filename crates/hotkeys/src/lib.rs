@@ -138,14 +138,15 @@ pub fn is_admin() -> bool {
     }
 }
 
-/// 以系統管理員身分重新啟動自己（帶原本的參數）；成功送出要求回傳 true
-pub fn relaunch_as_admin() -> bool {
+/// 以系統管理員身分重新啟動自己（帶原本的參數，再加上 `extra`）；成功送出要求回傳 true
+pub fn relaunch_as_admin(extra: &[&str]) -> bool {
     #[cfg(windows)]
     {
-        hook::relaunch_as_admin()
+        hook::relaunch_as_admin(extra)
     }
     #[cfg(not(windows))]
     {
+        let _ = extra;
         false
     }
 }

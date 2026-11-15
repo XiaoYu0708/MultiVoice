@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod instance;
 mod presets;
 mod settings;
 mod style;
@@ -19,6 +20,13 @@ fn main() -> eframe::Result {
             )
             .init();
     }
+    // 同一個設定檔已經在執行：叫回它的視窗，不開新的
+    let args: Vec<String> = std::env::args().collect();
+    let profile = args.iter().position(|a| a == "--profile").and_then(|i| args.get(i + 1)).cloned().unwrap_or("default".into());
+    let Some(_instance) = instance::acquire(&profile, args.iter().any(|a| a == instance::RESTARTED)) else {
+        return Ok(());
+    };
+    update::cleanup_old();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("無法建立 tokio runtime");
 
     let options = eframe::NativeOptions {
@@ -40,7 +48,7 @@ fn main() -> eframe::Result {
                 Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
                 _ => None,
             };
-            let tray = hwnd.and_then(tray::Tray::start);
+            let tray = hwnd.and_then(|h| tray::Tray::start(h, &profile));
             Ok(Box::new(app::App::new(rt, tray)))
         }),
     )

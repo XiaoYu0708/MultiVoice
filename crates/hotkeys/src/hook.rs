@@ -81,10 +81,12 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(Some(0)).collect()
 }
 
-pub fn relaunch_as_admin() -> bool {
+pub fn relaunch_as_admin(extra: &[&str]) -> bool {
     let Ok(exe) = std::env::current_exe() else { return false };
     let args: Vec<String> = std::env::args()
         .skip(1)
+        .filter(|a| !extra.contains(&a.as_str()))
+        .chain(extra.iter().map(|s| s.to_string()))
         .map(|a| if a.contains([' ', '"']) { format!("\"{}\"", a.replace('"', "\\\"")) } else { a })
         .collect();
     let (exe, args, verb) = (wide(exe.as_os_str()), wide(args.join(" ").as_ref()), wide("runas".as_ref()));

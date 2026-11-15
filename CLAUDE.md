@@ -43,7 +43,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `session` | 建房／加入（async）+ 房主轉移流程（`takeover.rs`）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
 | `web` | 網頁版（瀏覽器主執行緒，wasm-bindgen）：iroh WASM + `client-core`，前端檔案在 `crates/web/www/` |
 | `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、VAD、jitter buffer、混音 |
-| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔） |
+| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
 
@@ -65,7 +65,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - **M6（角色、踢人、封鎖、relay 權杖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」保留
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 66 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 67 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率
@@ -76,7 +76,9 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
     -Exe "%USERPROFILE%\\.cargo\\target-multivoice\\release\\multivoice.exe" \
     -Out "<暫存區>\\shot.png" -WaitMs 6000 -Extra "--auto-join <票> --deafen"
   ```
-  桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`
+  桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`、`--auto-update`（搭配 `MULTIVOICE_TEST_VERSION=0.0.1`，找到新版就直接更新）、
+  `--restarted`（自己重新啟動自己時帶：等舊程式結束，不是叫醒它）。**同一個設定檔只能開一個**，測試時多開要用不同的 `--profile`
+- 一鍵更新實測：把 exe 複製到暫存資料夾再跑（會被換成 GitHub 上的最新版），不要在 target 目錄裡直接測
   （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）
 - **UI 自動點擊前一定要確認 MultiVoice 是前景視窗**，否則會點到使用者的其他視窗；使用者正在用電腦時（例如剪貼簿內容變了）就停止自動點擊
 - 測試會在 `%APPDATA%\MultiVoice\` 產生 `identity-<profile>.key`、`settings-<profile>.toml`，**測完要刪掉測試用的**（保留 `identity-default.key`、`identity-test2.key`、`settings.toml`）。

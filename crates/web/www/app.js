@@ -34,7 +34,7 @@ let sentSlots = new Map();     // slot -> JSON of what was sent to the worklet
 const chanPrefs = () => store.get('channels', {});
 function savePrefs(name, cfg) {
   const all = chanPrefs();
-  all[name] = { mode: cfg.mode, listen: cfg.listen, volume: cfg.volume };
+  all[name] = { mode: cfg.mode, volume: cfg.volume };
   store.set('channels', all);
 }
 
@@ -256,8 +256,8 @@ function joinChannel(id) {
   const ch = state.channels.find((c) => c.id === id);
   if (!ch) return;
   const pref = chanPrefs()[ch.name] ?? {};
-  const cfg = { mode: pref.mode ?? 'vad', listen: pref.listen ?? true, volume: pref.volume ?? 1 };
-  if (!cfg.listen && cfg.mode === 'off') { cfg.listen = true; cfg.mode = 'vad'; }
+  // 加入頻道就是在收聽（不想聽就離開頻道），跟桌面版一樣不另外提供「收聽」開關
+  const cfg = { mode: pref.mode ?? 'vad', listen: true, volume: pref.volume ?? 1 };
   try {
     room.subscribe(id, cfg.listen, cfg.mode !== 'off');
     joined.set(id, cfg);
@@ -278,10 +278,7 @@ function updateChannel(id, change) {
   if (!cfg || !ch) return;
   const before = { ...cfg };
   Object.assign(cfg, change);
-  if (before.listen !== cfg.listen || (before.mode === 'off') !== (cfg.mode === 'off')) {
-    if (!cfg.listen && cfg.mode === 'off') { leaveChannel(id); return; }
-    room.subscribe(id, cfg.listen, cfg.mode !== 'off');
-  }
+  if ((before.mode === 'off') !== (cfg.mode === 'off')) room.subscribe(id, cfg.listen, cfg.mode !== 'off');
   if (cfg.mode !== 'ptt') held.delete(id);
   savePrefs(ch.name, cfg);
   refresh();
@@ -331,10 +328,9 @@ function makeCard(id) {
   const el = $('#channel-tpl').content.firstElementChild.cloneNode(true);
   const q = (s) => el.querySelector(s);
   const card = { el, name: q('.ch-name'), count: q('.ch-count'), join: q('.join'), chips: q('.chips'),
-    mode: q('.mode'), listen: q('.listen'), vol: q('.vol'), volVal: q('.vol-val'), ptt: q('.ptt') };
+    mode: q('.mode'), vol: q('.vol'), volVal: q('.vol-val'), ptt: q('.ptt') };
   card.join.addEventListener('click', () => (joined.has(id) ? leaveChannel(id) : joinChannel(id)));
   card.mode.addEventListener('change', () => updateChannel(id, { mode: card.mode.value }));
-  card.listen.addEventListener('change', () => updateChannel(id, { listen: card.listen.checked }));
   card.vol.addEventListener('input', () => {
     const cfg = joined.get(id);
     if (!cfg) return;
@@ -382,7 +378,6 @@ function updateCard(card, ch) {
   }));
   if (cfg) {
     if (document.activeElement !== card.mode) card.mode.value = cfg.mode;
-    card.listen.checked = cfg.listen;
     if (document.activeElement !== card.vol) card.vol.value = cfg.volume;
     card.volVal.textContent = Math.round(cfg.volume * 100) + '%';
   }

@@ -19,6 +19,7 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
+    ChangeWindowMessageFilterEx, MSGFLT_ALLOW,
     AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, HICON, IsIconic, MF_CHECKED, MF_SEPARATOR,
     MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
@@ -33,6 +34,15 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_TRAY_REMOVE: u32 = WM_APP + 2;
 /// UI 執行緒要求顯示「仍在執行」通知
 const WM_TRAY_BALLOON: u32 = WM_APP + 3;
+/// 叫回主視窗（再執行一次 exe 時，新的那個傳過來，見 instance.rs）
+pub const WM_SHOW_MAIN: u32 = WM_APP + 4;
+/// 系統匣隱藏視窗的類別名稱
+pub const CLASS: &str = "MultiVoiceTray";
+
+/// 系統匣隱藏視窗的標題（每個設定檔不同，instance.rs 用它找到已經在執行的那一個）
+pub fn window_name(profile: &str) -> String {
+    format!("MultiVoiceTray:{profile}")
+}
 
 const ID_SHOW: usize = 1;
 const ID_MUTE: usize = 2;
@@ -61,7 +71,7 @@ static TRAY: OnceLock<Arc<Tray>> = OnceLock::new();
 
 impl Tray {
     /// 建立系統匣圖示（整個程式一個）。`main` 是主視窗的 HWND
-    pub fn start(main: isize) -> Option<Arc<Tray>> {
+    pub fn start(main: isize, profile: &str) -> Option<Arc<Tray>> {
         let tray = TRAY
             .get_or_init(|| {
                 Arc::new(Tray {
@@ -73,9 +83,10 @@ impl Tray {
             })
             .clone();
         let (tx, rx) = std::sync::mpsc::channel();
+        let name = window_name(profile);
         std::thread::Builder::new()
             .name("tray".into())
-            .spawn(move || unsafe { run(tx) })
+            .spawn(move || unsafe { run(tx, &name) })
             .ok()?;
         rx.recv().ok().flatten().map(|_| tray)
     }
@@ -276,6 +287,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
         }
         WM_TRAY_BALLOON => unsafe { notify(hwnd, NIM_MODIFY, current_look(), true) },
+        WM_SHOW_MAIN => show_main(),
         WM_TRAY_REMOVE => unsafe {
             notify(hwnd, NIM_DELETE, Look::Idle, false);
             DestroyWindow(hwnd);
@@ -291,18 +303,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 /// 系統匣執行緒：建立隱藏視窗與圖示，跑訊息迴圈
-unsafe fn run(ready: std::sync::mpsc::Sender<Option<()>>) {
+unsafe fn run(ready: std::sync::mpsc::Sender<Option<()>>, name: &str) {
     unsafe {
         let hinst = GetModuleHandleW(std::ptr::null());
-        let class = wide("MultiVoiceTray");
+        let class = wide(CLASS);
+        let title = wide(name);
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hinst, lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
         RegisterClassW(&wc);
         // 一般的隱藏頂層視窗（不用 message-only，才收得到 TaskbarCreated 廣播）
-        let hwnd = CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, std::ptr::null());
+        let hwnd = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, std::ptr::null());
         if hwnd.is_null() {
             let _ = ready.send(None);
             return;
         }
+        // 我以系統管理員執行、再點 exe 的是一般權限時，Windows 預設會擋掉它傳來的訊息
+        ChangeWindowMessageFilterEx(hwnd, WM_SHOW_MAIN, MSGFLT_ALLOW, null_mut());
         let icons = Icons {
             idle: make_icon(Look::Idle),
             in_room: make_icon(Look::InRoom),
