@@ -1,0 +1,19 @@
+[package]
+name = "session"
+description = "MultiVoice 工作階段：建房／加入、音訊管線、狀態快照（CLI 與桌面版共用）"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+audio = { version = "0.1.0", path = "../audio" }
+client-core = { version = "0.1.0", path = "../client-core" }
+host-core = { version = "0.1.0", path = "../host-core" }
+iroh = "1"
+mixer-core = { version = "0.1.0", path = "../mixer-core" }
+protocol = { version = "0.1.0", path = "../protocol" }
+rtrb = "0.4"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+transport = { version = "0.1.0", path = "../transport" }

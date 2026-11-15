@@ -7,7 +7,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -48,7 +48,13 @@ const HANGOVER_FRAMES: u32 = 15; // 300 ms
 pub struct Shared {
     pub stop: AtomicBool,
     pub muted: AtomicBool,
+    /// 拒聽：照常消耗 jitter buffer，只是輸出靜音（取消時不會冒出累積的舊聲音）
+    pub deafened: AtomicBool,
     pub tx_active: AtomicBool,
+    /// 麥克風原始峰值（降噪前，f32 bits），音量表用；每幀更新
+    mic_peak: AtomicU32,
+    /// 最近一幀的人聲機率（f32 bits）
+    mic_vad: AtomicU32,
     epoch: Instant,
     jitter: Mutex<HashMap<SessionIdx, JitterBuffer>>,
     last_heard: Mutex<HashMap<SessionIdx, Instant>>,
@@ -56,7 +62,7 @@ pub struct Shared {
     underrun_base: AtomicU64,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct JitterSummary {
     pub target: String,
     pub fec: u64,
@@ -70,7 +76,10 @@ impl Shared {
         Self {
             stop: AtomicBool::new(false),
             muted: AtomicBool::new(false),
+            deafened: AtomicBool::new(false),
             tx_active: AtomicBool::new(false),
+            mic_peak: AtomicU32::new(0),
+            mic_vad: AtomicU32::new(0),
             epoch: Instant::now(),
             jitter: Default::default(),
             last_heard: Default::default(),
@@ -113,6 +122,20 @@ impl Shared {
 
     pub fn underruns(&self) -> u64 {
         self.out_stats.xruns.load(Ordering::Relaxed) - self.underrun_base.load(Ordering::Relaxed)
+    }
+
+    /// (麥克風峰值 0..1, 人聲機率 0..1)
+    pub fn mic_level(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.mic_peak.load(Ordering::Relaxed)),
+            f32::from_bits(self.mic_vad.load(Ordering::Relaxed)),
+        )
+    }
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -174,7 +197,10 @@ fn spawn_capture(client: Client, shared: Arc<Shared>, mut ring: rtrb::Consumer<f
                 if frame.len() < FRAME_SAMPLES {
                     continue;
                 }
+                let raw_peak = frame.iter().fold(0f32, |m, v| m.max(v.abs()));
                 let vad = denoiser.as_mut().map(|d| d.process(&mut frame)).unwrap_or(1.0);
+                shared.mic_peak.store(raw_peak.to_bits(), Ordering::Relaxed);
+                shared.mic_vad.store(vad.to_bits(), Ordering::Relaxed);
                 let rms = (frame.iter().map(|x| x * x).sum::<f32>() / FRAME_SAMPLES as f32).sqrt();
                 let db = 20.0 * rms.max(1e-9).log10();
                 // 一直編碼，讓編碼器狀態連續；只是決定要不要送
@@ -275,7 +301,11 @@ fn spawn_playback(shared: Arc<Shared>, mut out: rtrb::Producer<f32>, cap: usize,
                         }
                     }
                 }
-                soft_clip(&mut mix);
+                if shared.deafened.load(Ordering::Relaxed) {
+                    mix.fill(0.0);
+                } else {
+                    soft_clip(&mut mix);
+                }
                 for &s in &mix {
                     let _ = out.push(s);
                 }

@@ -316,16 +316,9 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "audio",
- "client-core",
- "host-core",
- "iroh",
- "mixer-core",
- "protocol",
- "rtrb",
+ "session",
  "tokio",
  "tracing-subscriber",
- "transport",
 ]
 
 [[package]]
@@ -2936,6 +2929,23 @@ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
  "base16ct",
  "serde",
+]
+
+[[package]]
+name = "session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audio",
+ "client-core",
+ "host-core",
+ "iroh",
+ "mixer-core",
+ "protocol",
+ "rtrb",
+ "tokio",
+ "tracing",
+ "transport",
 ]
 
 [[package]]

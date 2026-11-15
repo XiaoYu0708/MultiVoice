@@ -1,7 +1,7 @@
-//! MultiVoice 命令列客戶端（M1：單頻道房主模式）。
+//! MultiVoice 命令列客戶端（除錯、自動測試用；一般使用請用桌面版）。
 //!
-//!   multivoice host [選項]              建立房間（自己當房主），印出邀請票
-//!   multivoice join <邀請票> [選項]     加入房間
+//!   multivoice-cli host [選項]              建立房間（自己當房主），印出邀請票
+//!   multivoice-cli join <邀請票> [選項]     加入房間
 //!
 //! 選項：
 //!   --name <名稱>        顯示名稱（預設：Windows 使用者名稱）
@@ -18,34 +18,24 @@
 //!
 //! 執行中：輸入 m + Enter 切換靜音，q + Enter 離開。
 
-mod identity;
-mod pipeline;
-
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use client_core::{Client, ClientEvent};
-use host_core::{Host, HostConfig};
-use protocol::ticket::{RoomId, RoomSecret, Ticket};
-use transport::RelaySetup;
-
-use crate::pipeline::{AudioOpts, Shared};
+use session::{AudioOpts, Relays, Session, Snapshot};
 
 struct Opts {
     mode: String,
     ticket: Option<String>,
     name: String,
     profile: String,
-    relays: RelaySetup,
+    relays: Relays,
     audio: AudioOpts,
     seconds: Option<u64>,
 }
 
 fn parse_args() -> Result<Opts> {
     let mut args = std::env::args().skip(1);
-    let mode = args.next().context("用法：multivoice host | join <邀請票>（詳見 --help）")?;
+    let mode = args.next().context("用法：multivoice-cli host | join <邀請票>（詳見 --help）")?;
     if mode == "-h" || mode == "--help" {
         println!("見 crates/cli/src/main.rs 開頭的說明");
         std::process::exit(0);
@@ -55,7 +45,7 @@ fn parse_args() -> Result<Opts> {
         ticket: None,
         name: std::env::var("USERNAME").unwrap_or_else(|_| "玩家".into()),
         profile: "default".into(),
-        relays: RelaySetup::Default,
+        relays: Relays::Default,
         audio: AudioOpts::default(),
         seconds: None,
     };
@@ -66,7 +56,7 @@ fn parse_args() -> Result<Opts> {
             "--profile" => o.profile = val()?,
             "--relay" => {
                 let v = val()?;
-                o.relays = if v == "off" { RelaySetup::Disabled } else { RelaySetup::Custom(vec![v.parse()?]) };
+                o.relays = if v == "off" { Relays::Disabled } else { Relays::Custom(vec![v.parse()?]) };
             }
             "--in" => o.audio.input = Some(val()?),
             "--out" => o.audio.output = Some(val()?),
@@ -95,88 +85,32 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let o = parse_args()?;
-    let key = identity::load_or_create(&o.profile)?;
 
-    // 端點必須活到程式結束：被 drop 時 iroh 會直接中止底層 socket，連線就死了。
-    // `endpoints` 收集所有端點，離開時逐一正常關閉。
-    let mut endpoints = Vec::new();
-    let (client, events, _host) = match o.mode.as_str() {
-        "host" => {
-            // 房主端點用一次性的金鑰；自己的成員身分用 profile 的永久金鑰
-            let host_ep = transport::bind(transport::generate_secret(), o.relays.clone(), true).await?;
-            let ticket = Ticket {
-                room_id: RoomId(transport::random_bytes()),
-                secret: RoomSecret(transport::random_bytes()),
-                bootstrap: vec![transport::node_id(&host_ep.id())],
-            };
-            let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100 });
-            tokio::spawn({
-                let (host, ep) = (host.clone(), host_ep.clone());
-                async move { host.run(ep).await }
-            });
-            if !matches!(o.relays, RelaySetup::Disabled) {
-                let t = Instant::now();
-                if tokio::time::timeout(Duration::from_secs(10), host_ep.online()).await.is_err() {
-                    eprintln!("警告：10 秒內沒有連上任何 relay，其他人可能無法連進來");
-                } else {
-                    println!("房主上線（連上 relay）：{} ms", t.elapsed().as_millis());
-                }
-            }
-            println!("\n======== 邀請票（傳給要加入的人）========\n{ticket}\n");
-            println!("加入指令：multivoice join {ticket} --name <名稱>\n");
-
-            let ep = transport::bind(key, o.relays.clone(), false).await?;
-            let (c, rx) = Client::join_addr(&ep, transport::loopback_addr(&host_ep), &ticket, &o.name).await?;
-            endpoints.push(ep);
-            endpoints.push(host_ep);
-            (c, rx, Some(host))
-        }
+    let t = Instant::now();
+    let connected = match o.mode.as_str() {
+        "host" => session::host_room(&o.profile, &o.name, o.relays.clone()).await?,
         "join" => {
-            let ticket: Ticket = o.ticket.as_deref().context("請提供邀請票")?.parse()?;
-            let ep = transport::bind(key, o.relays.clone(), false).await?;
             println!("加入中…");
-            let t = Instant::now();
-            let (c, rx) = Client::join(&ep, &ticket, &o.name).await?;
-            println!("已加入（{} ms）", t.elapsed().as_millis());
-            endpoints.push(ep);
-            (c, rx, None)
+            session::join_room(o.ticket.as_deref().context("請提供邀請票")?, &o.profile, &o.name, o.relays.clone()).await?
         }
         other => bail!("未知模式 {other}（host 或 join）"),
     };
-
-    println!("你是 #{}「{}」。成員：{}", client.session_idx(), o.name, member_list(&client));
+    let s = Session::start(connected, &o.audio, &tokio::runtime::Handle::current())?;
+    let snap = s.snapshot();
+    if snap.is_host {
+        println!("\n======== 邀請票（傳給要加入的人）========\n{}\n", snap.ticket);
+    } else {
+        println!("已加入（{} ms）", t.elapsed().as_millis());
+    }
+    println!("你是 #{}「{}」。輸入：{}｜輸出：{}", snap.me.idx, snap.me.name, s.input_name, s.output_name);
     println!("輸入 m + Enter 切換靜音，q + Enter 離開。\n");
 
-    let shared = Arc::new(Shared::new());
-    let audio = pipeline::start(client.clone(), shared.clone(), &o.audio)?;
-    println!("輸入：{}｜輸出：{}", audio.input_name, audio.output_name);
-
-    run_ui(&client, events, &shared, o.seconds).await;
-
-    shared.stop.store(true, Ordering::Relaxed);
-    client.leave().await;
-    drop(audio);
-    for ep in endpoints {
-        ep.close().await;
-    }
+    run_ui(&s, o.seconds).await;
+    s.leave().await;
     Ok(())
 }
 
-fn member_list(c: &Client) -> String {
-    let m = c.members();
-    if m.is_empty() {
-        "（目前只有你）".into()
-    } else {
-        m.iter().map(|m| format!("#{} {}", m.session_idx, m.display_name)).collect::<Vec<_>>().join("、")
-    }
-}
-
-async fn run_ui(
-    client: &Client,
-    mut events: tokio::sync::mpsc::UnboundedReceiver<ClientEvent>,
-    shared: &Shared,
-    seconds: Option<u64>,
-) {
+async fn run_ui(s: &Session, seconds: Option<u64>) {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     std::thread::spawn(move || {
         let mut line = String::new();
@@ -189,28 +123,18 @@ async fn run_ui(
     });
 
     let mut tick = tokio::time::interval(Duration::from_secs(1));
-    let mut rtt = f64::NAN;
     let mut stdin_open = true;
+    let mut log_seen = 0;
     let deadline = seconds.map(|s| Instant::now() + Duration::from_secs(s));
     loop {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             break;
         }
         tokio::select! {
-            ev = events.recv() => match ev {
-                Some(ClientEvent::MemberJoined(m)) => println!("→ #{} {} 加入了", m.session_idx, m.display_name),
-                Some(ClientEvent::MemberLeft(i)) => {
-                    println!("← #{i} 離開了");
-                    shared.forget(i);
-                }
-                Some(ClientEvent::Rtt(r)) => rtt = r,
-                Some(ClientEvent::Disconnected(why)) => { println!("連線中斷：{why}"); break; }
-                None => break,
-            },
             cmd = cmd_rx.recv(), if stdin_open => match cmd.as_deref() {
                 Some("m") => {
-                    let now = !shared.muted.load(Ordering::Relaxed);
-                    shared.muted.store(now, Ordering::Relaxed);
+                    let now = !s.snapshot().muted;
+                    s.set_muted(now);
                     println!("{}", if now { "🔇 已靜音" } else { "🎤 已取消靜音" });
                 }
                 Some("q") => break,
@@ -218,39 +142,40 @@ async fn run_ui(
                 None => stdin_open = false,
                 Some(_) => println!("指令：m = 靜音切換，q = 離開"),
             },
-            _ = tick.tick() => print_status(client, shared, rtt),
+            _ = tick.tick() => {
+                let snap = s.snapshot();
+                for line in snap.log.iter().skip(log_seen) {
+                    println!("· {line}");
+                }
+                log_seen = snap.log.len();
+                if snap.disconnected.is_some() {
+                    break;
+                }
+                print_status(&snap);
+            }
         }
     }
 }
 
-fn print_status(client: &Client, shared: &Shared, rtt: f64) {
-    let speaking: Vec<String> = shared
-        .speaking(Duration::from_millis(300))
-        .into_iter()
-        .map(|i| client.member_name(i).unwrap_or_else(|| format!("#{i}")))
-        .collect();
-    let path = match client.path() {
+fn print_status(s: &Snapshot) {
+    let speaking: Vec<&str> = s.members.iter().filter(|m| m.speaking).map(|m| m.name.as_str()).collect();
+    let path = match s.path {
         Some((true, r)) => format!("relay {r:.0}ms"),
         Some((false, r)) => format!("直連 {r:.0}ms"),
         None => "?".into(),
     };
-    let me = if shared.muted.load(Ordering::Relaxed) {
-        "🔇"
-    } else if shared.tx_active.load(Ordering::Relaxed) {
-        "🎤送出中"
-    } else {
-        "🎤"
-    };
-    let j = shared.jitter_summary();
+    let me = if s.muted { "🔇" } else if s.tx_active { "🎤送出中" } else { "🎤" };
+    let j = &s.jitter;
     println!(
-        "{me}｜說話中：{}｜{path}｜ping {:.0}ms｜緩衝 {}｜FEC {} PLC {} 跳過 {} 遲到 {}｜欠載 {}",
+        "{me}｜成員 {}｜說話中：{}｜{path}｜ping {}｜緩衝 {}｜FEC {} PLC {} 跳過 {} 遲到 {}｜欠載 {}",
+        s.members.len() + 1,
         if speaking.is_empty() { "—".into() } else { speaking.join("、") },
-        rtt,
+        s.ping.map(|p| format!("{p:.0}ms")).unwrap_or_else(|| "—".into()),
         j.target,
         j.fec,
         j.plc,
         j.skipped,
         j.late,
-        shared.underruns()
+        s.underruns
     );
 }
