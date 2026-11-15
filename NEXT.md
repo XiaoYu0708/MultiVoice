@@ -93,7 +93,7 @@
   備用端點回去做轉址）。比較順序：人數 → 任期 → 端點 ID（小的贏）。涵蓋候補自己斷網而自立、舊房主回來、兩個候補同時接手。
   測試：`split_brain_merges_back_into_bigger_room`、`old_host_with_fewer_members_yields`（約 3.7 秒合併）
 - 不做 `HostLostVote` 多數確認：斷網的人湊不到票、PLAN 也規定 10 秒後仍升任，最後還是靠合併收尾
-- [ ] 先建後拆（目前是斷開後重連，約 0.4 秒空白）
+- [x] **先建後拆**（2026-11-16）：`Client::reconnect` 換到新房主後，舊連線再保留 `client_core::DRAIN`（1.5 秒），語音兩邊都送、兩邊都收（jitter buffer 依序號去重），舊連線上的控制訊息不再採用；房主離開時（`Session::leave`）等到沒人或 DRAIN 才關；改連重試間隔 300 → 100 ms。測試 `planned_migration_audio_gap`／`…_slow_member`：成員晚 400 ms 改連時，另一人聽到的空白從 357 ms（掉 16 包）降到 23 ms（0 遺失）
 - [ ] 候補排序只看進房先後，沒看直連／頻寬；`can_host`、「允許我成為房主」開關
 - [ ] `sim` 混沌測試
 - [ ] 原始房主（建房者）在 `host_room` 沒有備用端點：轉移後他若沒離開也不會再當候補（目前房主離開就是整個程式離開，沒影響）
@@ -154,7 +154,8 @@
 待做：
 - [x] 已部署（2026-11-16）：`tools/build-web.sh --deploy` 後 `MSYS_NO_PATHCONV=1 docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile`（在 deploy/ 執行；Git Bash 要關路徑轉換）。正式網址端對端測試通過。之後更新網頁版前**先問使用者**
 - [x] 使用者實測（2026-11-16）：手機（網頁版）與電腦（桌面版）在**不同網路**下可以正常通話
-- [ ] 細項還沒回報：iOS／Android 各自的情況、背景中斷後的「開啟麥克風」、喇叭回音、耗電
+- [x] 使用者回報（2026-11-16）：iPhone 鎖定或切到其他 App 時，麥克風指示燈仍亮但雙向都沒聲音——iOS Safari 在背景會暫停網頁音訊，網頁無法繞過（PLAN §8.2）。已改善：回到前景時自動恢復 AudioContext、麥克風被暫停／停掉就自動重開（不行才顯示按鈕）、iPhone 在房間畫面顯示說明、試用 `navigator.audioSession.type = 'play-and-record'`。要背景通話只能做原生 App
+- [ ] 細項還沒回報：Android 的情況、回到前景後是否自動恢復、喇叭回音、耗電
 - [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）
 - [ ] 網頁版的頻道左右定位、優先頻道（引擎已支援，UI 還沒放）
 - [ ] GitHub Pages 備援託管

@@ -280,7 +280,8 @@ impl Takeover {
             if tokio::time::timeout(TRY_TIMEOUT, self.client.reconnect(addr.clone())).await.is_ok_and(|r| r.is_ok()) {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            // 新房主可能還在啟動：很快再試
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         anyhow::bail!("新房主沒有回應")
     }

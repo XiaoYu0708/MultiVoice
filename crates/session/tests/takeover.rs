@@ -66,6 +66,13 @@ async fn connect(room: &Room, name: &str, key: iroh::SecretKey, host: Option<Hos
     connect_with(room, name, key, host, standby, true).await
 }
 
+/// 每次加入的人對 MigrateTo 的反應延遲（模擬網路慢的成員）；測試用全域設定，依加入順序取用
+static REACT_DELAY: std::sync::Mutex<Vec<(String, Duration)>> = std::sync::Mutex::new(Vec::new());
+
+fn react_delay(name: &str) -> Duration {
+    REACT_DELAY.lock().unwrap().iter().find(|(n, _)| n == name).map(|x| x.1).unwrap_or_default()
+}
+
 async fn connect_with(
     room: &Room,
     name: &str,
@@ -83,6 +90,7 @@ async fn connect_with(
     t.start_merge_loop();
     let (tx, ev) = mpsc::unbounded_channel();
     let t2 = t.clone();
+    let delay = react_delay(name);
     tokio::spawn(async move {
         while let Some(e) = raw.recv().await {
             match e {
@@ -91,7 +99,11 @@ async fn connect_with(
                     tokio::spawn(t2.clone().on_move(host));
                 }
                 ClientEvent::MigrateTo { session_idx, host, term } => {
-                    tokio::spawn(t2.clone().on_migrate(session_idx, host, term));
+                    let t = t2.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        t.on_migrate(session_idx, host, term).await
+                    });
                 }
                 ClientEvent::HostLost(_) => {
                     tokio::spawn(t2.clone().on_host_lost());
@@ -332,5 +344,74 @@ async fn host_hands_over_and_stays_as_member() -> Result<()> {
     wait_until("A 不再是房主、舊房主停掉", || a.t.host().is_none() && room.host.member_count() == 0).await;
     println!("讓出房主完成：{:?}", started.elapsed());
     assert_eq!(b_host.term(), 2);
+    Ok(())
+}
+
+/// 計畫性轉移期間的語音空白：C 一直說話（每 20 ms 一包）、B 一直聽，
+/// 照 `Session::leave` 的順序（migrate → 等一下 → 關掉舊房主），量 B 收到 C 的最長間隔與遺失包數
+#[tokio::test(flavor = "multi_thread")]
+async fn planned_migration_audio_gap() -> Result<()> {
+    audio_gap("Cslow", Duration::ZERO).await
+}
+
+/// C 晚 400 ms 才改連（網路慢）：B 先換到新房主，兩人短暫分在兩個房主上
+#[tokio::test(flavor = "multi_thread")]
+async fn planned_migration_audio_gap_slow_member() -> Result<()> {
+    audio_gap("Cslow2", Duration::from_millis(400)).await
+}
+
+async fn audio_gap(c_name: &str, c_delay: Duration) -> Result<()> {
+    REACT_DELAY.lock().unwrap().push((c_name.to_string(), c_delay));
+    let (room, a) = start_room().await?;
+    let mut b = connect(&room, "B", transport::generate_secret(), None, true).await?;
+    let mut c = connect(&room, c_name, transport::generate_secret(), None, true).await?;
+    for m in [&b, &c] {
+        m.c.subscribe(DEFAULT_CHANNEL, true, true)?;
+    }
+    let bi = b.c.session_idx();
+    wait_until("候補名單 B 第一", || c.c.successors().first().is_some_and(|s| s.session_idx == bi)).await;
+    wait_until("B、C 的訂閱生效", || room.host.subscriptions().len() >= 2).await;
+    let ci = c.c.session_idx();
+    let speaker = talk(c.c.clone());
+    // B 收聽：記錄每個 C 的封包（序號、到達時間）
+    let listener = b.c.clone();
+    let rec = tokio::spawn(async move {
+        let mut got: Vec<(u32, Instant)> = Vec::new();
+        let end = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < end {
+            let Ok(Ok(d)) = timeout(Duration::from_millis(200), listener.recv_voice()).await else { continue };
+            if let Some(v) = VoiceDown::parse(&d)
+                && v.kind == Kind::Voice
+                && v.sender_idx == ci
+            {
+                got.push((v.seq, Instant::now()));
+            }
+        }
+        got
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // 照 Session::leave：migrate → 自己離開 → 等成員改連過去（沒人或 DRAIN）→ 關掉
+    room.host.migrate().expect("有候補");
+    a.c.leave().await;
+    let start = Instant::now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while room.host.member_count() > 0 && start.elapsed() < client_core::DRAIN {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    room.host_ep.close().await;
+    wait_reconnected(&mut b, 2).await;
+    wait_reconnected(&mut c, 2).await;
+    let got = rec.await?;
+    speaker.abort();
+
+    let mut seqs: Vec<u32> = got.iter().map(|g| g.0).collect();
+    seqs.sort();
+    seqs.dedup();
+    let (first, last) = (seqs[0], *seqs.last().unwrap());
+    let lost = (last - first + 1) as usize - seqs.len();
+    let max_gap = got.windows(2).map(|w| w[1].1 - w[0].1).max().unwrap();
+    println!("轉移期間：最長間隔 {max_gap:?}，遺失 {lost} 包（共 {} 包）", last - first + 1);
+    assert!(max_gap < Duration::from_millis(150), "最長間隔 {max_gap:?}");
+    assert!(lost <= 2, "遺失 {lost} 包");
     Ok(())
 }

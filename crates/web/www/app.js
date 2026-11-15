@@ -13,7 +13,7 @@ const join64 = (lo, hi) => (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
 
 // ---------------------------------------------------------------- state
 let room = null;
-let ctx = null, node = null, micStream = null, wakeLock = null;
+let ctx = null, node = null, micStream = null, micSource = null, wakeLock = null;
 let state = null;              // last Room.state() JSON
 let audioStatus = null;        // last status from the worklet
 let muted = false, deafened = false;
@@ -75,9 +75,20 @@ function showJoinError(msg) {
 }
 
 // ---------------------------------------------------------------- audio
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+/** the user granted the mic once: try to bring it back automatically after the OS paused it */
+let micWanted = false;
+
 async function startAudio() {
+  // Safari 16.4+: tell iOS this is a call (mic + playback together)
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}
   ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
   await ctx.resume();
+  // iOS puts the context into 'interrupted'/'suspended' in the background or during a phone call
+  ctx.addEventListener('statechange', () => {
+    if (ctx && ctx.state !== 'running' && document.visibilityState === 'visible') ctx.resume().catch(() => {});
+    renderAudio();
+  });
   if (ctx.sampleRate !== 48000) throw new Error(`這個瀏覽器不支援 48 kHz 音訊（${ctx.sampleRate} Hz）`);
   const [bytes] = await Promise.all([
     fetch('web_audio.wasm').then((r) => { if (!r.ok) throw new Error('無法載入音訊引擎'); return r.arrayBuffer(); }),
@@ -96,19 +107,27 @@ async function startAudio() {
 async function enableMic() {
   micStream?.getTracks().forEach((t) => t.stop());
   micStream = null;
+  try { micSource?.disconnect(); } catch {}
+  micSource = null;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
     if (!ctx || !node) { stream.getTracks().forEach((t) => t.stop()); return; }
     micStream = stream;
-    ctx.createMediaStreamSource(stream).connect(node);
+    micWanted = true;
+    micSource = ctx.createMediaStreamSource(stream);
+    micSource.connect(node);
+    const track = stream.getAudioTracks()[0];
     // phones stop the mic when the page goes to the background
-    stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+    track?.addEventListener('ended', () => {
       if (micStream !== stream) return;
       micStream = null;
-      showMicWarning('麥克風被系統中斷了（例如切到其他 App）。', true);
+      if (document.visibilityState === 'visible') showMicWarning('麥克風被系統中斷了（例如切到其他 App）。', true);
     });
+    // iOS: the track is only paused ("muted") while in the background or during a call
+    track?.addEventListener('mute', () => { if (micStream === stream) renderAudio(); });
+    track?.addEventListener('unmute', () => { if (micStream === stream) renderAudio(); });
     showMicWarning('', false);
   } catch {
     showMicWarning('沒有麥克風權限，只能聽。', true);
@@ -125,6 +144,7 @@ $('#mic-retry').addEventListener('click', () => { ctx?.resume(); enableMic(); })
 function stopAudio() {
   micStream?.getTracks().forEach((t) => t.stop());
   micStream = null;
+  micWanted = false;
   try { node?.disconnect(); } catch {}
   node = null;
   ctx?.close().catch(() => {});
@@ -192,6 +212,7 @@ function enterRoom() {
   eventLoop(room);
   voiceLoop(room);
   setWakeLock(settings.wakelock);
+  $('#ios-note').hidden = !IOS;
 }
 
 async function eventLoop(r) {
@@ -408,7 +429,11 @@ function renderAudio() {
     fill.style.width = (micStream ? pos(st.level) : 0) + '%';
     fill.classList.toggle('voiced', st.voiced);
     const to = state.channels.filter((c) => c.slot != null && (st.tx & (1n << BigInt(c.slot)))).map((c) => c.name);
-    $('#mic-text').textContent = !micStream ? '麥克風：沒有權限（只能聽）'
+    const paused = ctx && ctx.state !== 'running';
+    const micPaused = micStream?.getAudioTracks()[0]?.muted;
+    $('#mic-text').textContent = paused ? '聲音暫停中（回到這個頁面就會恢復）'
+      : !micStream ? (micWanted ? '麥克風：已中斷' : '麥克風：沒有權限（只能聽）')
+      : micPaused ? '麥克風：系統暫停中'
       : muted || deafened ? '麥克風：已關閉'
       : st.active ? `送出中 → ${to.join('、')}` : st.voiced ? '偵測到說話' : '麥克風：安靜';
     const total = st.decoded + st.fec + st.plc;
@@ -470,12 +495,26 @@ async function setWakeLock(on) {
     }
   } catch {}
 }
+/** Back in the foreground: resume audio, and re-open the mic if the OS stopped or paused it */
+async function recoverAudio() {
+  if (!room || !ctx) return;
+  try { await ctx.resume(); } catch {}
+  const t = micStream?.getAudioTracks()[0];
+  if (micWanted && (!t || t.readyState === 'ended' || t.muted)) {
+    // give iOS a moment to un-pause the track by itself
+    await new Promise((r) => setTimeout(r, 600));
+    const t2 = micStream?.getAudioTracks()[0];
+    if (!t2 || t2.readyState === 'ended' || t2.muted) await enableMic();
+  }
+  renderAudio();
+}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     setWakeLock(settings.wakelock);
-    ctx?.resume().catch(() => {});
+    recoverAudio();
   }
 });
+window.addEventListener('pageshow', () => recoverAudio());
 window.addEventListener('pagehide', () => { room?.leave(); });
 setInterval(() => { if (room) refresh(); }, 2000);
 

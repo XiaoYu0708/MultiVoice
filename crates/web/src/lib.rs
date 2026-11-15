@@ -255,7 +255,7 @@ async fn reconnect_until(client: &Client, addr: EndpointAddr, within: Duration) 
         if try_addr(client, addr.clone()).await {
             return Ok(());
         }
-        n0_future::time::sleep(Duration::from_millis(300)).await;
+        n0_future::time::sleep(Duration::from_millis(100)).await;
     }
     Err(anyhow::anyhow!("新房主沒有回應")).context("改連新房主")
 }

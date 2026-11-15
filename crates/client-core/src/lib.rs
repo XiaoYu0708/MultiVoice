@@ -10,6 +10,10 @@
 //! - 收到 [`ClientEvent::HostLost`]：與房主的連線意外中斷；上層依 [`Client::successors`] 找新房主，
 //!   找不到就呼叫 [`Client::give_up`]（之後才會有 [`ClientEvent::Disconnected`]）
 //!
+//! **先建後拆**：換到新房主後，跟舊房主的連線再保留 [`DRAIN`]，這段時間語音兩邊都送、兩邊都收
+//! （重複的封包由 jitter buffer 依序號去掉；換房主後成員編號與槽位不變，兩邊的封包對得上）。
+//! 大家改連的時間不一樣（網路慢的人晚一點），先換過去的人和還沒換的人仍然能透過舊房主互相聽到。
+//!
 //! 計時與背景工作用 `n0_future`（原生走 tokio、瀏覽器走 wasm-bindgen-futures），網頁版（`crates/web`）也共用這個 crate。
 
 use std::collections::{BTreeMap, HashMap};
@@ -39,6 +43,8 @@ const PING_INTERVAL: Duration = Duration::from_secs(1);
 /// 這麼久沒收到房主任何控制訊息（含 Pong）就當成失聯（PLAN §5.3）。
 /// 不能等 QUIC 自己判斷：對方當機時 iroh 會改走 relay 繼續試，要 30 秒以上才放棄
 const HOST_SILENCE: Duration = Duration::from_millis(3500);
+/// 換房主後，舊連線再保留多久（先建後拆）
+pub const DRAIN: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
@@ -141,6 +147,8 @@ struct Inner {
     ticket: Ticket,
     name: String,
     link: Mutex<Link>,
+    /// 換房主後還在保留的舊連線（先建後拆，[`DRAIN`] 後關掉）
+    draining: Mutex<Option<Connection>>,
     room: Mutex<Room>,
     ev_tx: mpsc::UnboundedSender<ClientEvent>,
     /// 連線代數；換連線或放棄時更新，`recv_voice` 等它
@@ -217,6 +225,7 @@ impl Client {
             ticket: ticket.clone(),
             name: name.to_string(),
             link: Mutex::new(Link { conn: conn.clone(), ctrl: ctrl.clone(), session_idx, term, host: addr, generation: 0 }),
+            draining: Mutex::new(None),
             room: Mutex::new(room),
             ev_tx,
             generation: watch::channel(0).0,
@@ -278,7 +287,20 @@ impl Client {
                 &mut *l,
                 Link { conn: conn.clone(), ctrl: ctrl.clone(), session_idx, term, host: addr, generation },
             );
-            old.conn.close(0u32.into(), b"host changed");
+            // 先建後拆：舊連線先留著收送語音，DRAIN 後再關
+            if let Some(prev) = inner.draining.lock().unwrap().replace(old.conn.clone()) {
+                prev.close(0u32.into(), b"host changed");
+            }
+            let me = inner.clone();
+            n0_future::task::spawn(async move {
+                n0_future::time::sleep(DRAIN).await;
+                let mut d = me.draining.lock().unwrap();
+                if d.as_ref().is_some_and(|c| c.stable_id() == old.conn.stable_id()) {
+                    *d = None;
+                }
+                drop(d);
+                old.conn.close(0u32.into(), b"host changed");
+            });
             generation
         };
         inner.migrating.store(false, Ordering::SeqCst);
@@ -433,8 +455,13 @@ impl Client {
     pub fn send_voice(&self, kind: Kind, talk_mask: u64, seq: u32, payload: &[u8]) {
         let mut buf = Vec::with_capacity(protocol::voice::UP_HEADER + payload.len());
         VoiceUp { kind, talk_mask, seq, payload }.encode(&mut buf);
+        let buf = Bytes::from(buf);
         let conn = self.inner.link.lock().unwrap().conn.clone();
-        if let Err(e) = conn.send_datagram(Bytes::from(buf)) {
+        // 換房主中：舊房主也送一份（還沒改連的人在那邊）
+        if let Some(old) = self.inner.draining.lock().unwrap().clone() {
+            let _ = old.send_datagram(buf.clone());
+        }
+        if let Err(e) = conn.send_datagram(buf) {
             debug!("語音送出失敗：{e}");
         }
     }
@@ -452,7 +479,29 @@ impl Client {
                 let l = inner.link.lock().unwrap();
                 (l.conn.clone(), l.generation)
             };
-            match conn.read_datagram().await {
+            let old = inner.draining.lock().unwrap().clone();
+            let r = match old {
+                // 換房主中：兩條連線都收（換了新連線也要醒來改等新的）
+                Some(old) => tokio::select! {
+                    r = conn.read_datagram() => r,
+                    r = old.read_datagram() => match r {
+                        Ok(b) => return Ok(b),
+                        Err(_) => {
+                            let mut d = inner.draining.lock().unwrap();
+                            if d.as_ref().is_some_and(|c| c.stable_id() == old.stable_id()) {
+                                *d = None;
+                            }
+                            continue;
+                        }
+                    },
+                    _ = gen_rx.changed() => continue,
+                },
+                None => tokio::select! {
+                    r = conn.read_datagram() => r,
+                    _ = gen_rx.changed() => continue,
+                },
+            };
+            match r {
                 Ok(b) => return Ok(b),
                 Err(_) => {
                     // 等換上新連線（或放棄）
@@ -483,6 +532,9 @@ impl Client {
         inner.generation.send_modify(|g| *g += 1);
         n0_future::time::sleep(Duration::from_millis(100)).await;
         conn.close(0u32.into(), b"bye");
+        if let Some(old) = inner.draining.lock().unwrap().take() {
+            old.close(0u32.into(), b"bye");
+        }
     }
 }
 
@@ -571,6 +623,10 @@ fn spawn_link_tasks(
             let reason = loop {
                 let msg = transport::read_msg::<HostMsg>(&mut recv).await;
                 last_rx.store(inner.started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                // 已經換到新房主（這條是保留中的舊連線）：只用來收送語音，舊房主的房間狀態不再採用
+                if msg.is_ok() && inner.link.lock().unwrap().generation != generation {
+                    continue;
+                }
                 match msg {
                     Ok(HostMsg::Pong { t }) => {
                         let rtt = inner.started.elapsed().as_micros() as f64 / 1000.0 - t as f64 / 1000.0;

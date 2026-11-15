@@ -589,11 +589,16 @@ impl Session {
         let host = self.takeover.host();
         async move {
             client.leave().await;
-            // 我是房主：先交給第一候補，等大家收到通知再關（PLAN §5.2）
+            // 我是房主：先交給第一候補，等大家改連過去再關（PLAN §5.2）。
+            // 成員改連後還會跟我保留連線一下（先建後拆），所以等到沒人或最多 1.5 秒
             if let Some(h) = host
                 && h.migrate().is_some()
             {
-                tokio::time::sleep(Duration::from_millis(700)).await;
+                let start = std::time::Instant::now();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                while h.member_count() > 0 && start.elapsed() < client_core::DRAIN {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
             for ep in endpoints {
                 ep.close().await;
