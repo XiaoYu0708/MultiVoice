@@ -108,11 +108,15 @@
   設為「系統預設」時 Windows 換了預設裝置就跟著換；都開不起來時每 2 秒重試。訊息記在「最近事件」。
   驗證：`cargo run -p session --example switch_device --release`（含 `simulate_audio_failure` 自動重開）。
   **待使用者實測**：實際拔插 USB 耳機
-- [ ] AGC、麥克風測試介面（顯示原始／降噪後音量、底噪頻段分析，見 `audio/examples/mic_probe.rs`）
+- [x] **AGC、麥克風測試、VAD 門檻可調**（2026-11-15）：`audio::frontend::Frontend`（降噪 → VAD → AGC → 防爆音，通話與測試共用）。
+  VAD 看降噪後、增益前的音量 ≥ 門檻（`gate_dbfs`，預設 -50，可調 -70..-20）且人聲機率 ≥ 0.6；
+  AGC 只在說話時調整，拉向 -20 dBFS（+15／-6 dB，壓 0.2 秒、放大 2 秒）；底噪估計 → 「依環境噪音設定門檻」（底噪 + 12 dB）。
+  麥克風測試 `session::mictest::MicTest`（不進房；可聽自己的聲音），UI 在大廳「音訊設定」；設定區收起來就停止。
+  命令列：`cargo run -p session --example mic_test --release -- 秒數`（`MIC=名稱片段`）。
+  **待使用者實測**：實際講話時的門檻與 AGC 聽感（測試時使用者的麥克風一開始是靜音的）
 - [ ] 評估 libopus 1.5（Deep PLC / DRED）、IAudioClient3 低延遲、DeepFilterNet
-- [ ] VAD 門檻可調
 
-## 5. M6：身分、權限、房間管理
+## 5. M6：身分、權限、房間管理 —— **使用者決定不做**（2026-11-15）；以下保留紀錄，除非使用者改變主意
 - [x] 房主權限（2026-11-15）：`HostConfig::owner`（房主自己的成員 NodeId）；只有房主能改名／刪除頻道，其他人回 `Forbidden`；
   建立頻道所有人都可以。整合測試 `only_owner_can_rename_or_delete_channels`。M3 房主轉移時要決定 owner 是「建房者」還是「目前房主」
 - [ ] 頻道改名後，其他成員以舊名稱存的 PTT 鍵不會跟著改（房主自己改名時有搬過去）

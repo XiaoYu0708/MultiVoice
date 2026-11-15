@@ -8,6 +8,7 @@
 //! UI 透過 [`Session::snapshot`] 取得狀態快照、用 `set_*`／頻道方法下指令。
 
 pub mod identity;
+pub mod mictest;
 pub mod pipeline;
 pub mod takeover;
 pub mod talk;
@@ -28,6 +29,7 @@ use transport::RelaySetup;
 
 pub use hotkeys::{self, Hotkey};
 pub use mixer_core::route::ChannelMix;
+pub use audio::frontend::FrontendCfg;
 pub use pipeline::{AudioOpts, ChannelCfg, JitterSummary, Shared, TalkMode};
 pub use transport::RelaySetup as Relays;
 

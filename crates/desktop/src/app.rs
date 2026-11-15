@@ -56,6 +56,13 @@ pub struct App {
     update_rx: Option<mpsc::Receiver<Option<update::Release>>>,
     /// 有新版本（使用者按「稍後」就清掉）
     update: Option<update::Release>,
+    /// 麥克風測試（開著時記下用的是哪組裝置，換了就重開）
+    mic_test: Option<(session::mictest::MicTest, Option<String>, Option<String>)>,
+    /// 麥克風測試時播放自己的聲音
+    mic_monitor: bool,
+    mic_test_err: Option<String>,
+    /// 這一幀有沒有畫到麥克風測試（設定區收起來、進了房間就停止測試）
+    mic_test_shown: bool,
 }
 
 /// 正在設定 PTT 鍵的頻道（ID、名稱）
@@ -114,6 +121,10 @@ impl App {
             preset_msg: None,
             update_rx: Some(update::spawn_check()),
             update: None,
+            mic_test: None,
+            mic_monitor: false,
+            mic_test_err: None,
+            mic_test_shown: false,
         }
     }
 
@@ -228,6 +239,7 @@ impl App {
             Err(mpsc::TryRecvError::Disconnected) => Err(anyhow::anyhow!("連線工作意外中止")),
         };
         self.pending = None;
+        self.mic_test = None;
         match result.and_then(|c| Session::start(c, &self.settings.audio_opts(), self.rt.handle())) {
             Ok(s) => {
                 if self.start_deafened {
@@ -337,6 +349,19 @@ impl App {
             ui.add(egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).text("小聲講話保留"));
             ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
         }
+
+        ui.add_space(6.0);
+        ui.add(
+            egui::Slider::new(&mut self.settings.gate_dbfs, -70.0..=-20.0)
+                .step_by(1.0)
+                .text("說話偵測門檻")
+                .custom_formatter(|v, _| format!("{v:.0} dB")),
+        );
+        ui.weak("「偵測說話」模式下，聲音比門檻大才送出。背景吵時調高、講話常被切掉時調低");
+        ui.checkbox(&mut self.settings.agc, "自動音量（講話太小聲時自動放大、太大聲時壓低）");
+
+        ui.add_space(6.0);
+        self.mic_test_ui(ui);
 
         ui.add_space(8.0);
         ui.label(RichText::new("按鍵說話").strong());
@@ -466,6 +491,89 @@ impl App {
     }
 
     /// 一個頻道：名稱（右鍵改名／刪除）、加入／離開、我的說話與收聽設定、頻道成員
+    /// 麥克風測試：音量條（含門檻與環境噪音標記）、是否判定為說話、聽自己的聲音
+    fn mic_test_ui(&mut self, ui: &mut egui::Ui) {
+        self.mic_test_shown = true;
+        ui.label(RichText::new("麥克風測試").strong());
+        let (input, output) = (self.settings.input_device.clone(), self.settings.output_device.clone());
+        // 換了裝置：重開
+        if self.mic_test.as_ref().is_some_and(|(_, i, o)| *i != input || *o != output) {
+            self.mic_test = None;
+            self.start_mic_test();
+        }
+        ui.horizontal(|ui| {
+            if self.mic_test.is_some() {
+                if ui.button("停止測試").clicked() {
+                    self.mic_test = None;
+                }
+            } else if ui.button("開始測試").clicked() {
+                self.start_mic_test();
+            }
+            ui.checkbox(&mut self.mic_monitor, "聽自己的聲音").on_hover_text("戴耳機時再開，用喇叭會產生回授");
+        });
+        if let Some(e) = &self.mic_test_err {
+            ui.colored_label(RED, e);
+        }
+        let Some((t, ..)) = &self.mic_test else {
+            ui.weak("對著麥克風正常講話，看看會不會被判定為說話；也可以聽聽降噪後的聲音");
+            return;
+        };
+        t.set(self.settings.frontend_cfg(), self.mic_monitor);
+        let r = t.reading();
+
+        // 音量條：-70..0 dB
+        let frac = |db: f32| ((db + 70.0) / 70.0).clamp(0.0, 1.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 16.0), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
+        let mut fill = rect;
+        fill.set_right(rect.left() + rect.width() * frac(r.level_db));
+        p.rect_filled(fill, 3.0, if r.voiced { GREEN } else { BLUE });
+        let mark = |db: f32, color: Color32| {
+            let x = rect.left() + rect.width() * frac(db);
+            p.line_segment([egui::pos2(x, rect.top() - 2.0), egui::pos2(x, rect.bottom() + 2.0)], egui::Stroke::new(2.0, color));
+        };
+        mark(r.noise_db, Color32::GRAY);
+        mark(self.settings.gate_dbfs, AMBER);
+
+        ui.horizontal(|ui| {
+            if r.voiced {
+                ui.colored_label(GREEN, "偵測到說話");
+            } else {
+                ui.weak("安靜");
+            }
+            ui.weak(format!("｜音量 {:.0} dB｜環境噪音 {:.0} dB", r.level_db.max(-99.0), r.noise_db.max(-99.0)));
+            if self.settings.agc {
+                ui.weak(format!("｜自動音量 {:+.0} dB", r.gain_db));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.weak("黃線：門檻　灰線：環境噪音");
+            let suggested = audio::frontend::suggest_gate(r.noise_db);
+            if ui
+                .small_button("依環境噪音設定門檻")
+                .on_hover_text(format!("設成比環境噪音高 12 dB：{suggested:.0} dB（先安靜幾秒再按）"))
+                .clicked()
+            {
+                self.settings.gate_dbfs = suggested.round();
+            }
+        });
+        if r.peak > 0.98 {
+            ui.colored_label(AMBER, "音量爆掉了：麥克風太近或系統的麥克風音量太大");
+        }
+    }
+
+    fn start_mic_test(&mut self) {
+        let (input, output) = (self.settings.input_device.clone(), self.settings.output_device.clone());
+        match session::mictest::MicTest::start(input.clone(), output.clone(), self.settings.frontend_cfg(), self.mic_monitor) {
+            Ok(t) => {
+                self.mic_test = Some((t, input, output));
+                self.mic_test_err = None;
+            }
+            Err(e) => self.mic_test_err = Some(format!("無法開啟麥克風：{e:#}")),
+        }
+    }
+
     /// 有新版本時的提示列
     fn update_banner(&mut self, ui: &mut egui::Ui) {
         let Some(r) = self.update.clone() else { return };
@@ -811,6 +919,7 @@ impl eframe::App for App {
             self.update = r;
             self.update_rx = None;
         }
+        self.mic_test_shown = false;
         egui::CentralPanel::default().show(ui, |ui| {
             self.update_banner(ui);
             ui.horizontal(|ui| {
@@ -828,7 +937,10 @@ impl eframe::App for App {
             });
         });
 
-        if self.recording.is_some() {
+        if !self.mic_test_shown {
+            self.mic_test = None;
+        }
+        if self.recording.is_some() || self.mic_test.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         } else if self.session.is_some() || self.pending.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(80));

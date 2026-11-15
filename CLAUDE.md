@@ -59,9 +59,10 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵
 - 房間畫面不要有獨立的「語音設定」區塊，設定放在各頻道卡片裡
 - 不做置頂「誰在說話」小視窗（做過後移除）
+- **M6（角色、踢人、封鎖、relay 權杖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」保留
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 56 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 60 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率

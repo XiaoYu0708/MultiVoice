@@ -17,6 +17,10 @@ pub struct Settings {
     pub denoise: bool,
     /// 降噪時人聲混回原音的比例
     pub speech_mix: f32,
+    /// 「偵測說話」的音量門檻（dBFS）
+    pub gate_dbfs: f32,
+    /// 自動音量（AGC）
+    pub agc: bool,
     /// 輸出音量（1.0 = 原音量）
     pub output_volume: f32,
     /// 最近一次使用的邀請票（方便重新加入）
@@ -43,6 +47,8 @@ impl Default for Settings {
             open_mic: false,
             denoise: true,
             speech_mix: 0.3,
+            gate_dbfs: -50.0,
+            agc: true,
             output_volume: 1.0,
             last_ticket: String::new(),
             ptt_keys: BTreeMap::new(),
@@ -85,10 +91,17 @@ impl Settings {
             open_mic: self.open_mic,
             denoise: self.denoise,
             mix: self.speech_mix,
+            gate_dbfs: self.gate_dbfs,
+            agc: self.agc,
             volume: self.output_volume,
             cues: self.cues,
             ..Default::default()
         }
+    }
+
+    /// 麥克風前端處理設定（麥克風測試用）
+    pub fn frontend_cfg(&self) -> session::FrontendCfg {
+        session::FrontendCfg { denoise: self.denoise, speech_mix: self.speech_mix, gate_dbfs: self.gate_dbfs, agc: self.agc }
     }
 
     /// 某頻道設定的 PTT 鍵

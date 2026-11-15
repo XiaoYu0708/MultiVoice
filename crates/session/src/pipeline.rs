@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use audio::codec::{Decoder, Encoder, FRAME_SAMPLES, MAX_PACKET, SAMPLE_RATE};
-use audio::denoise::Denoiser;
+use audio::frontend::{DEFAULT_GATE_DBFS, Frontend, FrontendCfg};
 use audio::device::{self, StreamStats};
 use audio::resample::Resampler;
 use client_core::{Client, VoiceDown};
@@ -47,6 +47,10 @@ pub struct AudioOpts {
     pub open_mic: bool,
     pub denoise: bool,
     pub mix: f32,
+    /// 「偵測說話」的音量門檻（dBFS，降噪後、增益前）
+    pub gate_dbfs: f32,
+    /// 自動音量（AGC）
+    pub agc: bool,
     pub bitrate: i32,
     pub buffer_ms: u32,
     pub volume: f32,
@@ -62,6 +66,8 @@ impl Default for AudioOpts {
             open_mic: false,
             denoise: true,
             mix: 0.3,
+            gate_dbfs: DEFAULT_GATE_DBFS,
+            agc: true,
             bitrate: 32_000,
             buffer_ms: 30,
             volume: 1.0,
@@ -93,9 +99,6 @@ pub struct ChannelCfg {
     pub ptt_key: Option<Hotkey>,
 }
 
-/// VAD：RNNoise 人聲機率 + 降噪後音量（PLAN.md：人聲機率不能單獨使用）
-const VAD_PROB: f32 = 0.6;
-const VAD_MIN_DBFS: f32 = -50.0;
 pub(crate) const SLOTS: usize = protocol::control::MAX_SLOTS as usize;
 
 fn load_f32(a: &AtomicU32) -> f32 {
@@ -124,6 +127,8 @@ pub struct Shared {
     // 進房後可即時調整的設定
     denoise: AtomicBool,
     speech_mix: AtomicU32,
+    gate_dbfs: AtomicU32,
+    agc: AtomicBool,
     volume: AtomicU32,
     /// 各已加入頻道的設定；變更後呼叫 [`Shared::rebuild`]
     cfgs: Mutex<BTreeMap<ChannelId, ChannelCfg>>,
@@ -170,6 +175,8 @@ impl Shared {
             tx_active: AtomicBool::new(false),
             denoise: AtomicBool::new(true),
             speech_mix: AtomicU32::new(0.3f32.to_bits()),
+            gate_dbfs: AtomicU32::new(DEFAULT_GATE_DBFS.to_bits()),
+            agc: AtomicBool::new(true),
             volume: AtomicU32::new(1.0f32.to_bits()),
             cfgs: Mutex::new(BTreeMap::new()),
             slots: Mutex::new([SlotInfo::default(); SLOTS]),
@@ -194,6 +201,8 @@ impl Shared {
     pub fn apply(&self, o: &AudioOpts) {
         self.denoise.store(o.denoise, Ordering::Relaxed);
         store_f32(&self.speech_mix, o.mix);
+        store_f32(&self.gate_dbfs, o.gate_dbfs);
+        self.agc.store(o.agc, Ordering::Relaxed);
         store_f32(&self.volume, o.volume);
         self.cues.store(o.cues, Ordering::Relaxed);
     }
@@ -624,7 +633,7 @@ fn spawn_capture(
 ) -> Result<JoinHandle<()>> {
     let mut enc = Encoder::new(bitrate)?;
     let mut rs = Resampler::new(in_rate, SAMPLE_RATE, 1).map_err(anyhow::Error::from_boxed)?;
-    let mut denoiser = Denoiser::new();
+    let mut frontend = Frontend::new();
     let h = std::thread::Builder::new().name("capture".into()).spawn(move || {
         let mut frame = Vec::with_capacity(FRAME_SAMPLES);
         let mut pkt = [0u8; MAX_PACKET];
@@ -649,18 +658,16 @@ fn spawn_capture(
                 if frame.len() < FRAME_SAMPLES {
                     continue;
                 }
-                let raw_peak = frame.iter().fold(0f32, |m, v| m.max(v.abs()));
-                let vad = if shared.denoise.load(Ordering::Relaxed) {
-                    denoiser.set_speech_mix(load_f32(&shared.speech_mix));
-                    denoiser.process(&mut frame)
-                } else {
-                    // 沒有降噪就沒有人聲機率，VAD 只看音量
-                    1.0
+                // 降噪 → 說話判斷 → 自動音量 → 防爆音（audio::frontend）
+                let cfg = FrontendCfg {
+                    denoise: shared.denoise.load(Ordering::Relaxed),
+                    speech_mix: load_f32(&shared.speech_mix),
+                    gate_dbfs: load_f32(&shared.gate_dbfs),
+                    agc: shared.agc.load(Ordering::Relaxed),
                 };
-                store_f32(&shared.mic_peak, raw_peak);
-                store_f32(&shared.mic_vad, vad);
-                let rms = (frame.iter().map(|x| x * x).sum::<f32>() / FRAME_SAMPLES as f32).sqrt();
-                let db = 20.0 * rms.max(1e-9).log10();
+                let info = frontend.process(&mut frame, &cfg);
+                store_f32(&shared.mic_peak, info.raw_peak);
+                store_f32(&shared.mic_vad, info.vad_prob);
                 // 一直編碼，讓編碼器狀態連續；只是決定要不要送、送給哪些頻道
                 let n = match enc.encode(&frame, &mut pkt) {
                     Ok(n) => n,
@@ -682,7 +689,7 @@ fn spawn_capture(
                 let mask = talk.step(&TalkInputs {
                     open: shared.open_mask.load(Ordering::Relaxed),
                     vad: shared.vad_mask.load(Ordering::Relaxed),
-                    voiced: vad >= VAD_PROB && db >= VAD_MIN_DBFS,
+                    voiced: info.voiced,
                     ptt_held,
                     muted,
                 });
