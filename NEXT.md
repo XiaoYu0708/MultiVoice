@@ -158,7 +158,7 @@
 - [x] 使用者回報（2026-11-16）：iPhone 鎖定或切到其他 App 時，麥克風指示燈仍亮但雙向都沒聲音——iOS Safari 在背景會暫停網頁音訊，網頁無法繞過（PLAN §8.2）。已改善：回到前景時自動恢復 AudioContext、麥克風被暫停／停掉就自動重開（不行才顯示按鈕）、iPhone 在房間畫面顯示說明、試用 `navigator.audioSession.type = 'play-and-record'`。要背景通話只能做原生 App
 - [x] **手機在背景繼續說話與收聽**（2026-11-16，使用者 iPhone 實測可以）：iOS 在背景不讓一般網頁收音，但 WebRTC 通話例外（Discord 網頁版就是這樣）。做法：頁面內兩個 RTCPeerConnection 互連、把麥克風 track 掛上去，iOS 就把頁面當成通話；聲音仍走自己的引擎與連線（`app.js` 的 `startRtcKeepAlive`，iPhone 與 Android 都開）。先前試過的浮動視窗（子母畫面，可行但每次要按）與「背景只收聽」都已移除。網址加 `?ios` 可在電腦瀏覽器測手機流程
 - [ ] 細項還沒回報：Android 背景（不同廠牌省電機制）、回到前景後是否自動恢復、喇叭回音、耗電
-- iPhone 原生 App：使用者沒有 Mac；浮動視窗已能邊玩邊講，暫不需要
+- iPhone 原生 App：使用者沒有 Mac；網頁版已能邊玩邊講（WebRTC 通話），暫不需要
 - [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）
 - [ ] 網頁版的頻道左右定位、優先頻道（引擎已支援，UI 還沒放）
 - [ ] GitHub Pages 備援託管
