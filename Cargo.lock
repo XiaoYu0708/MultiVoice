@@ -874,6 +874,7 @@ dependencies = [
  "anyhow",
  "audio",
  "eframe",
+ "protocol",
  "serde",
  "session",
  "tokio",

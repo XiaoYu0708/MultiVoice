@@ -149,7 +149,7 @@ bootstrap      最近已知的數個成員 NodeId（含當下房主與候補房�
 Member → Host：
 - `Join { ... }` / `Resume { session_idx, subscriptions, talk_targets }`：換房主後重新登記自己的狀態
 - `Subscribe { channel_id, listen, talk }` / `Unsubscribe { channel_id }` / `SetListen { channel_id, listen }`
-- `RegisterTalkTarget { target_id: u8, channels: Vec<ChannelId> }`：預先註冊目標集合，語音封包只帶 1 byte
+- ~~`RegisterTalkTarget`~~（M2 實作時取消，見 §4.3）。改為 `Subscribe { channel, slot, listen, talk }`：**槽位由成員自己挑**，之後上行 `talk_mask`、下行 `via_mask` 都用槽位
 - `SetSelfState { muted, deafened }`
 - `AdminAction { ... }`：建立/刪除頻道、改權限、踢人、封鎖、指定房主
 - `Ping { t }` / `HostLostVote { term }`（見 §5.3）
@@ -168,8 +168,8 @@ Host → Member：
 Member → Host（6 byte 標頭 + Opus payload）：
 ```
 u8  kind        = 0x01 voice | 0x02 end-of-stream
-u8  target_id
-u32 seq         每幀 +1；換房主後不重置，接收端 jitter buffer 不受影響
+u64 talk_mask   要對哪些頻道說話（說話者自己的槽位）；M2 起取代 target_id，標頭變 13 bytes
+u32 seq         每幀 +1；換房主、換裝置後都不重置，接收端 jitter buffer 不受影響
 [...] opus payload（20 ms @ 32 kbps ≈ 80 bytes）
 ```
 
@@ -469,11 +469,17 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
 - [x] 從第一天就帶 `term`、`sender_idx` 欄位（為房主轉移鋪路）
 - [ ] 跨網路實測（需要第二台裝置）
 
-### M2：核心功能：多頻道收聽／多頻道開麥（2 週）⭐
-- [ ] 訂閱多頻道、每頻道 `listen` / `talk_mode`
-- [ ] Talk Target 註冊 + 扇出 + 去重 + `via_mask`
-- [ ] 混音器：每頻道音量、靜音、pan、優先頻道 ducking
-- [ ] `sim` 自動化測試：例如「說給 {1,2} 時，同時在 1、2 的人只收到一份」
+### M2：核心功能：多頻道收聽／多頻道開麥（2 週）⭐（2026-11-15 完成）
+- [x] 訂閱多頻道、每頻道 `listen` / `talk_mode`（關／偵測說話／常開；PTT 見 M4）
+- [x] ~~Talk Target 註冊~~ → **上行直接帶 `talk_mask`**（協定 v2）+ 扇出 + 去重 + `via_mask`
+  - 設計變更理由：預先註冊的 target_id 走控制串流，語音封包可能比登記先到而被丟掉（剛按 PTT 的第一個字）；PTT 多鍵組合也要事先登記。改帶 u64 遮罩，每包多 7 bytes（約 2.8 kbps）
+  - 槽位由成員自己挑並在 `Subscribe` 告知房主，不必等回覆就能說話
+- [x] 房主補送 end-of-stream：說話者換了頻道組合或停止說話時，對「不再聽得到」的人補一次，避免殘留 PLC 雜音
+- [x] 混音器：每頻道音量、pan（平衡式，置中不變小聲）、優先頻道 ducking（-12 dB）；輸出改為立體聲
+- [x] 頻道建立／改名／刪除（大廳不能刪），所有人看得到誰在哪個頻道、收聽／說話狀態
+- [x] 自動化測試（`client-core/tests/room.rs`）：「說給 {1,2} 時，同時在 1、2 的人只收到一份」、talk 權限、補送 end-of-stream、頻道生命週期；`session/examples/multichannel.rs` 驗證 UI 用的狀態快照
+- [x] 桌面版頻道介面：頻道卡片（加入／離開、收聽、說話模式、進階：音量／定位／優先）、頻道內成員與「在這個頻道說話」指示燈、目前送出的頻道、新增頻道、右鍵改名／刪除
+- [ ] 頻道設定的保存（目前離開房間後不保留；房間 ID 每次建房都不同，要等 M5 房間沉睡／喚醒再設計）
 
 ### M3：房主轉移（2 週）⭐
 - [ ] 狀態複製：`StateDelta` 廣播，成員維持副本並存檔

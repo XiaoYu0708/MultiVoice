@@ -4,7 +4,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
-use session::{Connected, Relays, Session, Snapshot};
+use protocol::DEFAULT_CHANNEL;
+use session::{Connected, Relays, Session, Snapshot, TalkMode};
 
 use crate::settings::Settings;
 use crate::style::{AMBER, BLUE, GREEN, RED};
@@ -27,6 +28,9 @@ pub struct App {
     start_deafened: bool,
     /// 目前套用到工作階段的音訊設定（用來偵測使用者在房間裡改了設定）
     applied: Option<session::AudioOpts>,
+    new_channel: String,
+    /// 正在改名的頻道與輸入中的名稱
+    renaming: Option<(u32, String)>,
 }
 
 enum Auto {
@@ -66,6 +70,8 @@ impl App {
             outputs: audio::device::list_devices(false),
             copied_at: None,
             applied: None,
+            new_channel: String::new(),
+            renaming: None,
         }
     }
 
@@ -185,9 +191,10 @@ impl App {
         }
 
         ui.add_space(6.0);
-        ui.label("開麥方式");
+        ui.label("加入頻道時預設的說話方式");
         ui.radio_value(&mut self.settings.open_mic, false, "偵測到說話才送出（建議）");
         ui.radio_value(&mut self.settings.open_mic, true, "一直開麥");
+        ui.weak("每個頻道可以在頻道列表裡個別調整");
 
         ui.add_space(6.0);
         ui.checkbox(&mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
@@ -208,6 +215,7 @@ impl App {
                 } else {
                     ui.label(RichText::new("已加入房間").strong());
                 }
+                ui.weak(format!("{} 人", snap.members.len() + 1));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let copied = self.copied_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2));
                     if ui.button(if copied { "已複製" } else { "複製邀請票" }).clicked() {
@@ -220,7 +228,7 @@ impl App {
         });
 
         ui.add_space(6.0);
-        // 自己
+        // 自己：麥克風音量與目前送出的頻道
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -245,20 +253,29 @@ impl App {
             let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
             let bar_color = if snap.muted { Color32::GRAY } else if db > -3.0 { AMBER } else { BLUE };
             ui.add(egui::ProgressBar::new(frac).desired_height(6.0).fill(bar_color));
+            if snap.talking_to.is_empty() {
+                ui.weak("目前送出：—");
+            } else {
+                ui.colored_label(GREEN, format!("目前送出：{}", snap.talking_to.join("、")));
+            }
         });
 
         ui.add_space(6.0);
-        ui.label(RichText::new(format!("成員（{}）", snap.members.len() + 1)).strong());
-        ui.vertical(|ui| {
-            if snap.members.is_empty() {
-                ui.weak("目前只有你。複製邀請票給朋友吧。");
-            }
-            for m in &snap.members {
-                ui.horizontal(|ui| {
-                    dot(ui, if m.speaking { GREEN } else { Color32::DARK_GRAY }, m.speaking);
-                    ui.label(&m.name);
-                    ui.weak(format!("#{}", m.idx));
-                });
+        ui.label(RichText::new("頻道").strong());
+        for ch in &snap.channels {
+            self.channel_card(ui, ch);
+        }
+        // 新增頻道
+        ui.horizontal(|ui| {
+            let w = ui.available_width() - 70.0;
+            let r = ui.add(egui::TextEdit::singleline(&mut self.new_channel).hint_text("新頻道名稱").desired_width(w));
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let ok = !self.new_channel.trim().is_empty();
+            if (ui.add_enabled(ok, egui::Button::new("新增")).clicked() || (enter && ok))
+                && let Some(s) = &self.session
+            {
+                s.create_channel(self.new_channel.trim());
+                self.new_channel.clear();
             }
         });
 
@@ -273,7 +290,7 @@ impl App {
             ui.add_space(4.0);
             self.audio_settings(ui);
         });
-        // 設定有變就套用：開麥方式、降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
+        // 設定有變就套用：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
         let opts = self.settings.audio_opts();
         if self.applied.as_ref() != Some(&opts) {
             if let Some(s) = self.session.as_mut() {
@@ -293,6 +310,104 @@ impl App {
         egui::CollapsingHeader::new("最近事件").default_open(false).show(ui, |ui| {
             for line in snap.log.iter().rev().take(10) {
                 ui.weak(line);
+            }
+        });
+    }
+
+    /// 一個頻道：名稱（右鍵改名／刪除）、加入／離開、我的說話與收聽設定、頻道成員
+    fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView) {
+        let Some(s) = &self.session else { return };
+        let joined = ch.mine.is_some();
+        let fill = if joined { ui.visuals().faint_bg_color } else { ui.visuals().panel_fill };
+        egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                if self.renaming.as_ref().is_some_and(|(id, _)| *id == ch.id) {
+                    let (_, text) = self.renaming.as_mut().unwrap();
+                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(160.0));
+                    r.request_focus();
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        s.rename_channel(ch.id, text.trim());
+                        self.renaming = None;
+                    } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.renaming = None;
+                    }
+                } else {
+                    let name = ui.add(egui::Label::new(RichText::new(&ch.name).strong()).sense(egui::Sense::click()));
+                    name.context_menu(|ui| {
+                        if ui.button("改名").clicked() {
+                            self.renaming = Some((ch.id, ch.name.clone()));
+                            ui.close();
+                        }
+                        if ch.id != DEFAULT_CHANNEL && ui.button("刪除頻道").clicked() {
+                            s.delete_channel(ch.id);
+                            ui.close();
+                        }
+                    });
+                    name.on_hover_text("右鍵：改名／刪除");
+                }
+                ui.weak(format!("{} 人", ch.members.len()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if joined {
+                        if ui.small_button("離開").clicked() {
+                            let _ = s.set_channel(ch.id, None);
+                        }
+                    } else if ui.small_button("加入").clicked() {
+                        let _ = s.set_channel(ch.id, Some(s.default_channel_cfg()));
+                    }
+                });
+            });
+
+            if let Some(mut cfg) = ch.mine {
+                let before = cfg;
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut cfg.listen, "收聽");
+                    ui.label("說話");
+                    egui::ComboBox::from_id_salt(("talk", ch.id))
+                        .width(110.0)
+                        .selected_text(talk_label(cfg.talk))
+                        .show_ui(ui, |ui| {
+                            for m in [TalkMode::Off, TalkMode::Voice, TalkMode::Open] {
+                                ui.selectable_value(&mut cfg.talk, m, talk_label(m));
+                            }
+                        });
+                    if cfg.mix.priority {
+                        ui.colored_label(AMBER, "優先");
+                    }
+                });
+                egui::CollapsingHeader::new("進階").id_salt(("adv", ch.id)).default_open(false).show(ui, |ui| {
+                    ui.add(egui::Slider::new(&mut cfg.mix.volume, 0.0..=2.0).text("音量"));
+                    ui.add(egui::Slider::new(&mut cfg.mix.pan, -1.0..=1.0).text("左右定位").custom_formatter(|v, _| {
+                        if v < -0.05 {
+                            format!("左 {:.0}%", -v * 100.0)
+                        } else if v > 0.05 {
+                            format!("右 {:.0}%", v * 100.0)
+                        } else {
+                            "中".into()
+                        }
+                    }));
+                    ui.checkbox(&mut cfg.mix.priority, "優先頻道（有人說話時壓低其他頻道）");
+                });
+                if cfg != before {
+                    // 不收聽也不說話等同離開，set_channel 會處理
+                    let _ = s.set_channel(ch.id, Some(cfg));
+                }
+            }
+
+            for m in &ch.members {
+                ui.horizontal(|ui| {
+                    dot(ui, if m.speaking { GREEN } else { Color32::DARK_GRAY }, m.speaking);
+                    if m.is_me {
+                        ui.label(RichText::new(format!("{}（我）", m.name)).strong());
+                    } else {
+                        ui.label(&m.name);
+                    }
+                    if m.listen && !m.talk {
+                        ui.weak("只聽");
+                    } else if m.talk && !m.listen {
+                        ui.weak("只說");
+                    }
+                });
             }
         });
     }
@@ -396,5 +511,13 @@ impl Drop for App {
             let fut = s.leave();
             let _ = self.rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), fut).await });
         }
+    }
+}
+
+fn talk_label(m: TalkMode) -> &'static str {
+    match m {
+        TalkMode::Off => "不說話",
+        TalkMode::Voice => "偵測說話",
+        TalkMode::Open => "一直開麥",
     }
 }

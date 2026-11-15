@@ -15,13 +15,14 @@
 //!   --buffer <ms>        輸出緩衝目標（預設 30）
 //!   --volume <倍數>      輸出音量（預設 1.0；0 = 靜音，用於自動測試）
 //!   --seconds <秒>       時間到自動離開（自動測試用）
+//!   --channel <名稱>     建立這個頻道並在裡面一直開麥，大廳改為只聽（可重複；自動測試用）
 //!
 //! 執行中：輸入 m + Enter 切換靜音，q + Enter 離開。
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use session::{AudioOpts, Relays, Session, Snapshot};
+use session::{AudioOpts, ChannelCfg, ChannelMix, Relays, Session, Snapshot, TalkMode};
 
 struct Opts {
     mode: String,
@@ -31,6 +32,7 @@ struct Opts {
     relays: Relays,
     audio: AudioOpts,
     seconds: Option<u64>,
+    channels: Vec<String>,
 }
 
 fn parse_args() -> Result<Opts> {
@@ -48,6 +50,7 @@ fn parse_args() -> Result<Opts> {
         relays: Relays::Default,
         audio: AudioOpts::default(),
         seconds: None,
+        channels: Vec::new(),
     };
     while let Some(a) = args.next() {
         let mut val = || args.next().with_context(|| format!("{a} 需要一個值"));
@@ -67,6 +70,7 @@ fn parse_args() -> Result<Opts> {
             "--buffer" => o.audio.buffer_ms = val()?.parse()?,
             "--volume" => o.audio.volume = val()?.parse()?,
             "--seconds" => o.seconds = Some(val()?.parse()?),
+            "--channel" => o.channels.push(val()?),
             _ if o.ticket.is_none() && !a.starts_with("--") => o.ticket = Some(a),
             other => bail!("未知選項 {other}"),
         }
@@ -105,6 +109,9 @@ async fn main() -> Result<()> {
     println!("你是 #{}「{}」。輸入：{}｜輸出：{}", snap.me.idx, snap.me.name, s.input_name, s.output_name);
     println!("輸入 m + Enter 切換靜音，q + Enter 離開。\n");
 
+    if !o.channels.is_empty() {
+        setup_channels(&s, &o.channels).await?;
+    }
     run_ui(&s, o.seconds).await;
     s.leave().await;
     Ok(())
@@ -178,4 +185,25 @@ fn print_status(s: &Snapshot) {
         j.late,
         s.underruns
     );
+}
+
+/// 自動測試用：建立頻道並在裡面一直開麥，大廳改為只聽
+async fn setup_channels(s: &Session, names: &[String]) -> Result<()> {
+    let open = ChannelCfg { listen: true, talk: TalkMode::Open, mix: ChannelMix::default() };
+    s.set_channel(0, Some(ChannelCfg { talk: TalkMode::Off, ..open }))?;
+    for name in names {
+        s.create_channel(name);
+        let id = 'wait: {
+            for _ in 0..100 {
+                if let Some(c) = s.snapshot().channels.iter().find(|c| &c.name == name) {
+                    break 'wait c.id;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            bail!("頻道「{name}」沒有建立");
+        };
+        s.set_channel(id, Some(open))?;
+        println!("已建立頻道「{name}」並一直開麥");
+    }
+    Ok(())
 }
