@@ -1,7 +1,7 @@
 //! 麥克風測試（不連網路）：印出幾秒的音量、是否判定為說話、環境噪音、自動音量
 //!
 //! cargo run -p session --example mic_test --release -- [秒數] [nodenoise]
-//! （MIC=名稱片段 指定麥克風）
+//! （MIC=名稱片段 指定麥克風；STRONG=1 用強力降噪）
 
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     // 第二個參數 nodenoise：關掉降噪（排查用）
     let denoise = std::env::args().nth(2).as_deref() != Some("nodenoise");
     // 環境變數 MIC=名稱片段：指定麥克風
-    let t = MicTest::start(std::env::var("MIC").ok(), None, FrontendCfg { denoise, ..FrontendCfg::default() }, false)?;
+    let t = MicTest::start(std::env::var("MIC").ok(), None, FrontendCfg { denoise, strong: std::env::var("STRONG").is_ok(), ..FrontendCfg::default() }, false)?;
     for _ in 0..secs * 4 {
         std::thread::sleep(Duration::from_millis(250));
         let r = t.reading();

@@ -7,6 +7,8 @@
 //!   太大聲時快速壓（約 0.2 秒）、太小聲時慢慢放大（約 2 秒）；安靜時維持原增益，不會把背景噪音放大
 //! - 防爆音：增益後峰值超過 0.95 就整幀縮回
 //! - 底噪估計：音量的慢速下包絡（往下立即跟、往上約 10 秒），給「依環境噪音設定門檻」用
+//! - 強力降噪（`strong`）：送出的聲音改用 DeepFilterNet3（`dfn3_rs`）。對寬頻噪音多壓約 30 dB、
+//!   CPU 約多 0.3% 個核心，但多 20 ms 延遲（30 ms vs RNNoise 10 ms）。說話判斷仍用 RNNoise 的人聲機率
 
 use crate::codec::FRAME_SAMPLES;
 use crate::denoise::Denoiser;
@@ -31,11 +33,13 @@ pub struct FrontendCfg {
     /// 說話音量門檻（dBFS）
     pub gate_dbfs: f32,
     pub agc: bool,
+    /// 強力降噪（DeepFilterNet3）；`denoise` 也要開
+    pub strong: bool,
 }
 
 impl Default for FrontendCfg {
     fn default() -> Self {
-        Self { denoise: true, speech_mix: 0.3, gate_dbfs: DEFAULT_GATE_DBFS, agc: true }
+        Self { denoise: true, speech_mix: 0.3, gate_dbfs: DEFAULT_GATE_DBFS, agc: true, strong: false }
     }
 }
 
@@ -58,6 +62,10 @@ pub struct FrameInfo {
 
 pub struct Frontend {
     denoiser: Denoiser,
+    /// 第一次用到強力降噪時才建立（建立時會配置記憶體；處理時不會）
+    strong: Option<Box<dfn3_rs::Denoiser>>,
+    /// 強力降噪時 RNNoise 只算人聲機率，輸出寫到這裡丟掉
+    scratch: Vec<f32>,
     gain_db: f32,
     noise_db: Option<f32>,
 }
@@ -79,14 +87,26 @@ fn db_to_lin(db: f32) -> f32 {
 
 impl Frontend {
     pub fn new() -> Self {
-        Self { denoiser: Denoiser::new(), gain_db: 0.0, noise_db: None }
+        Self { denoiser: Denoiser::new(), strong: None, scratch: Vec::new(), gain_db: 0.0, noise_db: None }
     }
 
     /// 處理一幀（就地改寫 `frame`）
     pub fn process(&mut self, frame: &mut [f32], cfg: &FrontendCfg) -> FrameInfo {
         debug_assert_eq!(frame.len(), FRAME_SAMPLES);
         let raw_peak = frame.iter().fold(0f32, |m, v| m.max(v.abs()));
-        let vad_prob = if cfg.denoise {
+        let vad_prob = if cfg.denoise && cfg.strong {
+            // 人聲機率仍用 RNNoise（輸出丟掉），聲音用 DeepFilterNet3
+            self.scratch.clear();
+            self.scratch.extend_from_slice(frame);
+            self.denoiser.set_speech_mix(0.0);
+            let prob = self.denoiser.process(&mut self.scratch);
+            let df = self.strong.get_or_insert_with(|| Box::new(dfn3_rs::Denoiser::new()));
+            for half in frame.chunks_exact_mut(dfn3_rs::FRAME_SIZE) {
+                let half: &mut [f32; dfn3_rs::FRAME_SIZE] = half.try_into().expect("20 ms 幀 = 兩個 10 ms");
+                df.process_frame(half);
+            }
+            prob
+        } else if cfg.denoise {
             self.denoiser.set_speech_mix(cfg.speech_mix);
             self.denoiser.process(frame)
         } else {
@@ -151,7 +171,36 @@ mod tests {
     }
 
     // 不開降噪（人聲機率固定 1），只測音量門檻、AGC、底噪
-    const CFG: FrontendCfg = FrontendCfg { denoise: false, speech_mix: 0.0, gate_dbfs: -40.0, agc: true };
+    const CFG: FrontendCfg = FrontendCfg { denoise: false, speech_mix: 0.0, gate_dbfs: -40.0, agc: true, strong: false };
+
+    /// 寬頻噪音：強力降噪要比標準降噪壓得多
+    #[test]
+    fn strong_denoise_suppresses_broadband_noise_more() {
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut noise = || -> Vec<f32> {
+            (0..FRAME_SAMPLES)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    ((seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * 0.05
+                })
+                .collect()
+        };
+        let mut level = |strong: bool| {
+            let mut f = Frontend::new();
+            let cfg = FrontendCfg { denoise: true, speech_mix: 0.0, gate_dbfs: -40.0, agc: false, strong };
+            let mut out = Vec::new();
+            for _ in 0..150 {
+                let mut x = noise();
+                f.process(&mut x, &cfg);
+                out.extend(x);
+            }
+            rms_db(&out[out.len() / 2..])
+        };
+        let (std_db, strong_db) = (level(false), level(true));
+        assert!(strong_db < std_db - 15.0, "標準 {std_db:.1} dBFS、強力 {strong_db:.1} dBFS");
+    }
 
     #[test]
     fn gate_decides_voiced() {

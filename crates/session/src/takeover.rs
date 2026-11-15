@@ -125,6 +125,26 @@ impl Takeover {
         }
     }
 
+    /// 讓出房主（計畫性轉移，但自己留在房間）：通知第一候補接手，自己的客戶端跟著改連過去，
+    /// 等大家換過去後停掉自己的房主。沒有候補時回傳 false
+    pub fn hand_over(self: &Arc<Self>) -> bool {
+        let Some(host) = self.host() else { return false };
+        let Some(next) = host.migrate() else { return false };
+        info!("讓出房主給 #{}", next.session_idx);
+        (self.log)("正在把房主交給其他人…".into());
+        let me = self.clone();
+        tokio::spawn(async move {
+            // 大家（包括我自己的客戶端）收到 MigrateTo 後改連新房主；舊的房主再撐一下轉發殘留封包
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+            host.stop();
+            *me.host.lock().unwrap() = None;
+            if let Some(ep) = me.standby.clone() {
+                tokio::spawn(me.clone().redirect_loop(ep));
+            }
+        });
+        true
+    }
+
     /// 雙房主合併：目前的房主讓位，改連 `host`
     pub async fn on_move(self: Arc<Self>, host: HostAddr) {
         if self.busy.swap(true, Ordering::SeqCst) {

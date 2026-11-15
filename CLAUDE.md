@@ -33,7 +33,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | crate | 用途 |
 |---|---|
 | `protocol` | 協定 v4（v3 房主轉移、v4 雙房主合併）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
-| `audio` | cpal 裝置（輸出為**立體聲**交錯）、重取樣（`resample`，非 48 kHz 裝置）、Opus、RNNoise 降噪（含 speech mix）、`list_devices` |
+| `audio` | cpal 裝置（輸出為**立體聲**交錯、熱插拔偵測）、重取樣（`resample`）、Opus（libopus 1.6.1）、前端處理 `frontend`（RNNoise／DeepFilterNet3 降噪、VAD、AGC）、`list_devices` |
 | `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking） |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
@@ -62,7 +62,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - **M6（角色、踢人、封鎖、relay 權杖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」保留
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 60 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 62 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率

@@ -316,3 +316,21 @@ async fn old_host_with_fewer_members_yields() -> Result<()> {
     assert_eq!(room.host.member_count(), 0, "原房主停掉後沒有人");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn host_hands_over_and_stays_as_member() -> Result<()> {
+    let (room, a, b, c) = three_member_room().await?;
+    let started = Instant::now();
+
+    // A（房主）讓出房主：B 接手，A 自己留在房間
+    assert!(a.t.hand_over());
+    let b_id = transport::node_id(&b.standby.as_ref().unwrap().id());
+    wait_until("B 成為房主", || b.t.host().is_some()).await;
+    wait_until("A、C 都改連到 B", || a.c.host_id() == b_id && c.c.host_id() == b_id).await;
+    let b_host = b.t.host().unwrap();
+    wait_until("B 那邊三個人", || b_host.member_count() == 3).await;
+    wait_until("A 不再是房主、舊房主停掉", || a.t.host().is_none() && room.host.member_count() == 0).await;
+    println!("讓出房主完成：{:?}", started.elapsed());
+    assert_eq!(b_host.term(), 2);
+    Ok(())
+}

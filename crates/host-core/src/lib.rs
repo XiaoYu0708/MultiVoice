@@ -161,6 +161,8 @@ impl State {
 pub struct HostStats {
     pub datagrams_in: u64,
     pub datagrams_out: u64,
+    /// 轉發出去的位元組（房主負載）
+    pub bytes_out: u64,
     pub bad_datagrams: u64,
 }
 
@@ -589,6 +591,7 @@ impl Host {
             up.to_down(from, mask).encode(out);
             if st.members[&ri].conn.send_datagram(Bytes::copy_from_slice(out)).is_ok() {
                 stats.datagrams_out += 1;
+                stats.bytes_out += out.len() as u64;
             }
         }
 

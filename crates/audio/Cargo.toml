@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 cpal = "0.18"
 nnnoiseless = { version = "0.5.2", default-features = false }
-opus = "0.3"
+opus = "0.4"
 rtrb = "0.4"
 rubato = "5"
+# 強力降噪（DeepFilterNet3，權重內嵌約 5 MB）
+dfn3_rs = { version = "0.1.2", features = ["embedded-model"] }

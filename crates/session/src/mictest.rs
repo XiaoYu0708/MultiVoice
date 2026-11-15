@@ -50,6 +50,7 @@ struct Live {
     speech_mix: AtomicU32,
     gate_dbfs: AtomicU32,
     agc: AtomicBool,
+    strong: AtomicBool,
     monitor: AtomicBool,
 }
 
@@ -59,6 +60,7 @@ impl Live {
         st(&self.speech_mix, cfg.speech_mix);
         st(&self.gate_dbfs, cfg.gate_dbfs);
         self.agc.store(cfg.agc, Ordering::Relaxed);
+        self.strong.store(cfg.strong, Ordering::Relaxed);
         self.monitor.store(monitor, Ordering::Relaxed);
     }
 }
@@ -162,6 +164,7 @@ fn run(
                 speech_mix: ld(&live.speech_mix),
                 gate_dbfs: ld(&live.gate_dbfs),
                 agc: live.agc.load(Ordering::Relaxed),
+                strong: live.strong.load(Ordering::Relaxed),
             };
             let info = frontend.process(&mut frame, &cfg);
             st(&stats.peak, info.raw_peak);

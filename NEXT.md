@@ -114,7 +114,19 @@
   麥克風測試 `session::mictest::MicTest`（不進房；可聽自己的聲音），UI 在大廳「音訊設定」；設定區收起來就停止。
   命令列：`cargo run -p session --example mic_test --release -- 秒數`（`MIC=名稱片段`）。
   **待使用者實測**：實際講話時的門檻與 AGC 聽感（測試時使用者的麥克風一開始是靜音的）
-- [ ] 評估 libopus 1.5（Deep PLC / DRED）、IAudioClient3 低延遲、DeepFilterNet
+- [x] **網路統計**（2026-11-16）：底部狀態列顯示最近 5 秒的遺失率（需要 FEC／PLC 補償的幀比例）；房主在房間資訊看到
+  「房主負載：轉發給 N 人｜上傳約 X kbps」與「讓出房主」按鈕（`Session::hand_over` → `Takeover::hand_over`：計畫性轉移但自己留下；
+  `host_room` 也建備用端點，讓出後還能再當候補）。測試 `host_hands_over_and_stays_as_member`；桌面版實測按下後 CLI 成為新房主
+- [x] **評估**（2026-11-16，量測程式不在 repo，結果如下）：
+  - **libopus**：`opus` 0.3（libopus 1.3.1）→ **0.4（libopus 1.6.1，已升級）**，API 相容、位元流相容（實測 v0.3.0 與新版互通）。
+    Deep PLC／OSCE／DRED：`opusic-sys` 有 `osce`、`dred` 功能；Deep PLC 要解碼器複雜度 ≥ 5，但 `opus` 0.4 的 Decoder 沒開放
+    `set_complexity`，要自己用 `opusic_sys` FFI 包解碼器；DRED 的 ctl 在 `opus` 0.4 也還沒包。**待做**（效果只在掉包時聽得出來）
+  - **IAudioClient3**：cpal 0.18 用 IAudioClient、系統預設週期（通常 10 ms）；改 IAudioClient3 每個方向約省 5～7 ms，
+    相對整體 80～160 ms 效益小，又要改 cpal 的 WASAPI 後端 → **不做**
+  - **DeepFilterNet3**（`dfn3_rs`，純 Rust、處理時不配置記憶體、AVX2）：合成寬頻噪音壓低 40 dB（RNNoise 9 dB）；
+    TTS 中文語音 + -36 dBFS 噪音：句子之間 -64 dBFS（RNNoise -47）、語音音量 -0.9 dB、但語音段波形 SNR 11.1 dB（RNNoise 15.7，
+    表示會改變人聲波形）；CPU 約 1% 個核心；延遲 30 ms（RNNoise 10 ms）；執行檔 +5.5 MB。
+    → **做成可選的「強力降噪」**（大廳音訊設定，預設關閉；說話判斷仍用 RNNoise 的人聲機率），聽感由使用者在麥克風測試比較
 
 ## 5. M6：身分、權限、房間管理 —— **使用者決定不做**（2026-11-15）；以下保留紀錄，除非使用者改變主意
 - [x] 房主權限（2026-11-15）：`HostConfig::owner`（房主自己的成員 NodeId）；只有房主能改名／刪除頻道，其他人回 `Forbidden`；

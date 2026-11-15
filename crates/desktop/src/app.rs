@@ -346,8 +346,15 @@ impl App {
         ui.add_space(6.0);
         ui.checkbox(&mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
         if self.settings.denoise {
-            ui.add(egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).text("小聲講話保留"));
-            ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.settings.strong_denoise, false, "標準");
+                ui.radio_value(&mut self.settings.strong_denoise, true, "強力（DeepFilterNet）")
+                    .on_hover_text("背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。可以在下面的麥克風測試開「聽自己的聲音」比較");
+            });
+            if !self.settings.strong_denoise {
+                ui.add(egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).text("小聲講話保留"));
+                ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
+            }
         }
 
         ui.add_space(6.0);
@@ -404,6 +411,23 @@ impl App {
                 });
             });
             ui.weak("把邀請票傳給朋友，他們貼上就能加入");
+            // 房主負載（PLAN §6.4）：上傳被語音吃掉太多時，可以讓給別人
+            if let Some(load) = snap.host_load {
+                ui.horizontal(|ui| {
+                    ui.weak(format!("房主負載：轉發給 {} 人｜上傳約 {:.0} kbps", load.listeners, load.up_kbps));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let r = ui
+                            .add_enabled(snap.can_hand_over, egui::Button::new("讓出房主").small())
+                            .on_hover_text("交給最早進房的人接手，你會留在房間裡（遊戲網路吃緊時用）")
+                            .on_disabled_hover_text("房間裡還沒有可以接手的人");
+                        if r.clicked()
+                            && let Some(s) = &self.session
+                        {
+                            s.hand_over();
+                        }
+                    });
+                });
+            }
         });
 
         ui.add_space(6.0);
@@ -873,10 +897,12 @@ impl App {
             None => "連線中…".into(),
         };
         let j = &snap.jitter;
-        ui.weak(format!(
-            "{path}｜緩衝 {}｜補償 FEC {} / PLC {}｜欠載 {}",
-            j.target, j.fec, j.plc, snap.underruns
-        ));
+        let loss = match snap.loss {
+            Some(l) => format!("{:.1}%", l * 100.0),
+            None => "—".into(),
+        };
+        ui.weak(format!("{path}｜緩衝 {}｜遺失 {loss}｜欠載 {}", j.target, snap.underruns))
+            .on_hover_text("遺失：最近 5 秒收到的語音中，需要補償（FEC／PLC）的比例。持續超過 5% 會聽到斷斷續續");
         ui.add_space(2.0);
     }
 }

@@ -67,17 +67,14 @@ pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<
         // 等連上 relay，別人才找得到這個房間；逾時也繼續（可能只是 relay 暫時連不上）
         let _ = tokio::time::timeout(Duration::from_secs(10), host_ep.online()).await;
     }
-    let ep = transport::bind(key, relays, false).await?;
+    let ep = transport::bind(key, relays.clone(), false).await?;
     let (client, events) = Client::join_addr(&ep, transport::loopback_addr(&host_ep), &ticket, name).await?;
-    Ok(Connected {
-        client,
-        events,
-        endpoints: vec![ep, host_ep],
-        host: Some(host),
-        standby: None,
-        wait_online: false,
-        name: name.into(),
-    })
+    // 房主也建備用端點：讓出房主後，之後還能再當候補
+    let wait_online = !matches!(relays, RelaySetup::Disabled);
+    let standby = transport::bind(transport::generate_secret(), relays, true).await.ok();
+    let mut endpoints = vec![ep, host_ep];
+    endpoints.extend(standby.clone());
+    Ok(Connected { client, events, endpoints, host: Some(host), standby, wait_online, name: name.into() })
 }
 
 pub async fn join_room(ticket: &str, profile: &str, name: &str, relays: RelaySetup) -> Result<Connected> {
@@ -150,6 +147,12 @@ pub struct Snapshot {
     /// 控制串流 ping（ms）
     pub ping: Option<f64>,
     pub jitter: JitterSummary,
+    /// 最近約 5 秒收到的語音裡，需要補償（FEC／PLC）的比例；沒人說話時 None
+    pub loss: Option<f32>,
+    /// 我是房主時的負載
+    pub host_load: Option<HostLoad>,
+    /// 有候補可以接手（「讓出房主」能不能按）
+    pub can_hand_over: bool,
     pub underruns: u64,
     /// 最近的事件（新的在後）
     pub log: Vec<String>,
@@ -186,6 +189,51 @@ impl RoomState {
     }
 }
 
+/// 房主負載
+#[derive(Clone, Copy, Debug)]
+pub struct HostLoad {
+    /// 轉發給幾個人（不含自己）
+    pub listeners: usize,
+    /// 轉發的上傳頻寬（kbps）
+    pub up_kbps: f64,
+}
+
+/// 每秒取樣一次累計值，算最近一段時間的速率
+#[derive(Default)]
+struct Meter {
+    /// (時間, 正常解碼, 補償, 房主送出位元組)
+    samples: VecDeque<(std::time::Instant, u64, u64, u64)>,
+}
+
+impl Meter {
+    const WINDOW: Duration = Duration::from_secs(5);
+
+    fn sample(&mut self, decoded: u64, concealed: u64, bytes_out: u64) {
+        let now = std::time::Instant::now();
+        if self.samples.back().is_some_and(|s| now.duration_since(s.0) < Duration::from_secs(1)) {
+            return;
+        }
+        self.samples.push_back((now, decoded, concealed, bytes_out));
+        while self.samples.len() > 2 && now.duration_since(self.samples[0].0) > Self::WINDOW {
+            self.samples.pop_front();
+        }
+    }
+
+    /// (遺失率, 上傳 kbps)
+    fn rates(&self) -> (Option<f32>, f64) {
+        let (Some(a), Some(b)) = (self.samples.front(), self.samples.back()) else { return (None, 0.0) };
+        // 有人離開時 jitter buffer 會被移除，累計值可能變小：用 saturating
+        let good = b.1.saturating_sub(a.1);
+        let bad = b.2.saturating_sub(a.2);
+        let total = good + bad;
+        // 少於 1 秒的語音（50 幀）不算，數字會亂跳
+        let loss = (total >= 50).then(|| bad as f32 / total as f32);
+        let secs = b.0.duration_since(a.0).as_secs_f64();
+        let kbps = if secs > 0.0 { b.3.saturating_sub(a.3) as f64 * 8.0 / 1000.0 / secs } else { 0.0 };
+        (loss, kbps)
+    }
+}
+
 /// 進行中的工作階段（音訊已啟動）。不是 `Send`，留在建立它的執行緒。
 pub struct Session {
     client: Client,
@@ -195,6 +243,10 @@ pub struct Session {
     endpoints: Vec<Endpoint>,
     /// 換房主的流程，也記著「我現在是不是房主」
     takeover: Arc<takeover::Takeover>,
+    /// 遺失率、房主上傳量
+    meter: Mutex<Meter>,
+    /// UI 執行緒不在 tokio 裡：需要開 task 時先 enter
+    rt: tokio::runtime::Handle,
     name: String,
     room: Arc<Mutex<RoomState>>,
     /// 目前套用中的音訊設定
@@ -312,6 +364,8 @@ impl Session {
             audio: Some(handle),
             endpoints: c.endpoints,
             takeover,
+            meter: Mutex::new(Meter::default()),
+            rt: rt.clone(),
             name: c.name,
             room,
             opts: audio.clone(),
@@ -407,6 +461,16 @@ impl Session {
         let channel_names: HashMap<ChannelId, String> =
             self.client.channels().into_iter().map(|c| (c.id, c.name)).collect();
 
+        let jitter = self.shared.jitter_summary();
+        let host = self.takeover.host();
+        let is_host = host.is_some();
+        let (loss, up_kbps) = {
+            let mut m = self.meter.lock().unwrap();
+            let bytes_out = host.as_ref().map(|h| h.stats().bytes_out).unwrap_or(0);
+            m.sample(jitter.decoded, jitter.fec + jitter.plc, bytes_out);
+            m.rates()
+        };
+        let host_load = host.map(|h| HostLoad { listeners: h.member_count().saturating_sub(1), up_kbps });
         let (mic_peak, mic_vad) = self.shared.mic_level();
         let tx_active = self.shared.tx_active.load(Ordering::Relaxed);
         let r = self.room.lock().unwrap();
@@ -425,11 +489,20 @@ impl Session {
             mic_vad,
             path: self.client.path(),
             ping: r.ping,
-            jitter: self.shared.jitter_summary(),
+            loss,
+            host_load,
+            can_hand_over: is_host && !self.client.successors().is_empty(),
+            jitter,
             underruns: self.shared.underruns(),
             log: r.log.iter().cloned().collect(),
             disconnected: r.disconnected.clone(),
         }
+    }
+
+    /// 讓出房主：交給第一候補，自己留在房間當一般成員。沒有候補時回傳 false
+    pub fn hand_over(&self) -> bool {
+        let _guard = self.rt.enter();
+        self.takeover.hand_over()
     }
 
     /// 目前的邀請票：現任房主在最前面，後面是候補的備用端點（房主換人後舊票也比較可能還能用）

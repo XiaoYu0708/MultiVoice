@@ -51,6 +51,8 @@ pub struct AudioOpts {
     pub gate_dbfs: f32,
     /// 自動音量（AGC）
     pub agc: bool,
+    /// 強力降噪（DeepFilterNet3；多 20 ms 延遲）
+    pub strong_denoise: bool,
     pub bitrate: i32,
     pub buffer_ms: u32,
     pub volume: f32,
@@ -68,6 +70,7 @@ impl Default for AudioOpts {
             mix: 0.3,
             gate_dbfs: DEFAULT_GATE_DBFS,
             agc: true,
+            strong_denoise: false,
             bitrate: 32_000,
             buffer_ms: 30,
             volume: 1.0,
@@ -129,6 +132,7 @@ pub struct Shared {
     speech_mix: AtomicU32,
     gate_dbfs: AtomicU32,
     agc: AtomicBool,
+    strong_denoise: AtomicBool,
     volume: AtomicU32,
     /// 各已加入頻道的設定；變更後呼叫 [`Shared::rebuild`]
     cfgs: Mutex<BTreeMap<ChannelId, ChannelCfg>>,
@@ -160,6 +164,8 @@ pub struct Shared {
 #[derive(Default, Clone, Debug)]
 pub struct JitterSummary {
     pub target: String,
+    /// 正常解碼的幀數（算遺失率用）
+    pub decoded: u64,
     pub fec: u64,
     pub plc: u64,
     pub skipped: u64,
@@ -177,6 +183,7 @@ impl Shared {
             speech_mix: AtomicU32::new(0.3f32.to_bits()),
             gate_dbfs: AtomicU32::new(DEFAULT_GATE_DBFS.to_bits()),
             agc: AtomicBool::new(true),
+            strong_denoise: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
             cfgs: Mutex::new(BTreeMap::new()),
             slots: Mutex::new([SlotInfo::default(); SLOTS]),
@@ -203,6 +210,7 @@ impl Shared {
         store_f32(&self.speech_mix, o.mix);
         store_f32(&self.gate_dbfs, o.gate_dbfs);
         self.agc.store(o.agc, Ordering::Relaxed);
+        self.strong_denoise.store(o.strong_denoise, Ordering::Relaxed);
         store_f32(&self.volume, o.volume);
         self.cues.store(o.cues, Ordering::Relaxed);
     }
@@ -322,6 +330,7 @@ impl Shared {
         let mut s = JitterSummary::default();
         let mut targets = Vec::new();
         for jb in jbs.values() {
+            s.decoded += jb.stats.decoded;
             s.fec += jb.stats.fec;
             s.plc += jb.stats.plc;
             s.skipped += jb.stats.skipped;
@@ -664,6 +673,7 @@ fn spawn_capture(
                     speech_mix: load_f32(&shared.speech_mix),
                     gate_dbfs: load_f32(&shared.gate_dbfs),
                     agc: shared.agc.load(Ordering::Relaxed),
+                    strong: shared.strong_denoise.load(Ordering::Relaxed),
                 };
                 let info = frontend.process(&mut frame, &cfg);
                 store_f32(&shared.mic_peak, info.raw_peak);
