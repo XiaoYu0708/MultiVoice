@@ -913,18 +913,29 @@ impl App {
                 }
             }
 
-            for m in &ch.members {
-                ui.horizontal(|ui| {
-                    dot(ui, if m.speaking { GREEN } else { Color32::DARK_GRAY }, m.speaking);
-                    if m.is_me {
-                        ui.label(RichText::new(format!("{}（我）", m.name)).strong());
-                    } else {
-                        ui.label(&m.name);
-                    }
-                    if m.listen && !m.talk {
-                        ui.weak("只聽");
-                    } else if m.talk && !m.listen {
-                        ui.weak("只說");
+            // 成員清單預設折疊（人多時卡片才不會很長）；折疊時標題列出誰在說話
+            if !ch.members.is_empty() {
+                let speaking: Vec<&str> = ch.members.iter().filter(|m| m.speaking).map(|m| m.name.as_str()).collect();
+                let title = if speaking.is_empty() {
+                    RichText::new("成員名單")
+                } else {
+                    RichText::new(format!("說話中：{}", speaking.join("、"))).color(GREEN)
+                };
+                egui::CollapsingHeader::new(title).id_salt(("members", ch.id)).default_open(false).show(ui, |ui| {
+                    for m in &ch.members {
+                        ui.horizontal(|ui| {
+                            dot(ui, if m.speaking { GREEN } else { Color32::DARK_GRAY }, m.speaking);
+                            if m.is_me {
+                                ui.label(RichText::new(format!("{}（我）", m.name)).strong());
+                            } else {
+                                ui.label(&m.name);
+                            }
+                            if m.listen && !m.talk {
+                                ui.weak("只聽");
+                            } else if m.talk && !m.listen {
+                                ui.weak("只說");
+                            }
+                        });
                     }
                 });
             }

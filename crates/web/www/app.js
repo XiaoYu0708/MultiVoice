@@ -33,6 +33,8 @@ const joined = new Map();
 /** channel ids whose PTT button is held */
 const held = new Set();
 const cards = new Map();
+/** channel ids whose member list is expanded (collapsed by default) */
+const expanded = new Set();
 let sentSlots = new Map();     // slot -> JSON of what was sent to the worklet
 
 const chanPrefs = () => store.get('channels', {});
@@ -469,8 +471,13 @@ function makeCard(id) {
   const el = $('#channel-tpl').content.firstElementChild.cloneNode(true);
   const q = (s) => el.querySelector(s);
   const card = { el, name: q('.ch-name'), count: q('.ch-count'), join: q('.join'), chips: q('.chips'),
+    toggle: q('.members-toggle'), summary: q('.speaking-summary'),
     mode: q('.mode'), vol: q('.vol'), volVal: q('.vol-val'), ptt: q('.ptt') };
   card.join.addEventListener('click', () => (joined.has(id) ? leaveChannel(id) : joinChannel(id)));
+  card.toggle.addEventListener('click', () => {
+    if (!expanded.delete(id)) expanded.add(id);
+    renderRoom();
+  });
   card.mode.addEventListener('change', () => updateChannel(id, { mode: card.mode.value }));
   card.vol.addEventListener('input', () => {
     const cfg = joined.get(id);
@@ -506,6 +513,10 @@ function updateCard(card, ch) {
   card.el.classList.toggle('joined', !!cfg);
   card.el.classList.toggle('mode-ptt', cfg?.mode === 'ptt');
   card.name.textContent = ch.name;
+  const open = expanded.has(ch.id);
+  card.el.classList.toggle('show-members', open);
+  card.toggle.textContent = open ? '收起成員' : '顯示成員';
+  card.toggle.hidden = ch.members.length === 0;
   card.count.textContent = ch.members.length ? `${ch.members.length} 人` : '';
   card.join.textContent = cfg ? '離開' : '加入';
   card.chips.replaceChildren(...ch.members.map((m) => {
@@ -534,13 +545,16 @@ function renderAudio() {
     const bit = ch.slot != null ? 1n << BigInt(ch.slot) : 0n;
     const meTalking = !!(st && st.active && (st.tx & bit));
     card.el.classList.toggle('talking', meTalking);
+    const talkers = [];
     for (const li of card.chips.children) {
       const idx = Number(li.dataset.idx);
       let on = false;
       if (idx === state.me) on = meTalking;
       else if (st && bit) { const via = st.speaking.get(idx); on = via !== undefined && (via & bit) !== 0n; }
       li.classList.toggle('speaking', on);
+      if (on) talkers.push(memberName(idx));
     }
+    card.summary.textContent = talkers.length ? '說話中：' + talkers.join('、') : '';
   }
   const pos = (db) => Math.max(0, Math.min(100, ((db + 70) / 70) * 100));
   $('#meter-gate').style.left = pos(settings.gate) + '%';
