@@ -147,6 +147,17 @@ pub extern "C" fn mv_set_volume(p: *mut Handle, v: f32) {
     h(p).engine.volume = v.clamp(0.0, 4.0);
 }
 
+/// 我聽某位成員的音量倍率（1.0 = 原本；負數 = 移除設定）
+#[unsafe(no_mangle)]
+pub extern "C" fn mv_set_user_gain(p: *mut Handle, idx: u32, gain: f32) {
+    let e = &mut h(p).engine;
+    if gain < 0.0 || gain == 1.0 {
+        e.user_gain.remove(&(idx as u16));
+    } else {
+        e.user_gain.insert(idx as u16, gain.min(10.0));
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mv_set_gate(p: *mut Handle, db: f32) {
     h(p).engine.gate_db = db;

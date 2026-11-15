@@ -30,6 +30,8 @@ pub struct Settings {
     /// 按鍵說話：頻道名稱 → 按鍵（頻道 ID 每次建房都不同，所以用名稱）。
     /// 有設定的頻道，加入時自動用「按鍵說話」
     pub ptt_keys: BTreeMap<String, String>,
+    /// 我聽各成員的音量（成員名稱 → 倍率 0..10）；右鍵成員名字調整。用名稱是因為網頁版成員每次的身分都不同
+    pub member_volumes: BTreeMap<String, f32>,
     /// 開／關麥提示音
     pub cues: bool,
     /// 在房間中關閉視窗時縮到系統匣（不離開房間）
@@ -57,6 +59,7 @@ impl Default for Settings {
             output_volume: 1.0,
             last_ticket: String::new(),
             ptt_keys: BTreeMap::new(),
+            member_volumes: BTreeMap::new(),
             cues: true,
             close_to_tray: true,
             allow_host: true,

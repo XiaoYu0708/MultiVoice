@@ -104,6 +104,23 @@
   <ol id="log" class="log"></ol>
 </main>
 
+<!-- 長按（手機）或右鍵（電腦）成員名字：調整聽這個人的音量 -->
+<div id="vol-pop" class="sheet-backdrop" hidden>
+  <div class="sheet panel" role="dialog" aria-labelledby="vol-name">
+    <h3 id="vol-name"></h3>
+    <div class="row">
+      <input id="vol-range" type="range" min="0" max="1000" step="1">
+      <b id="vol-val" class="vol-val-big"></b>
+    </div>
+    <div class="row">
+      <button id="vol-mute" type="button" class="ghost">靜音</button>
+      <button id="vol-reset" type="button" class="ghost">重設</button>
+      <button id="vol-done" type="button" class="primary">完成</button>
+    </div>
+    <p class="muted small">只影響你聽到的音量（0～1000%）。同一個名字下次進房也會套用。</p>
+  </div>
+</div>
+
 <template id="channel-tpl">
   <article class="card">
     <div class="card-head">

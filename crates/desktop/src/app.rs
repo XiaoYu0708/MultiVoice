@@ -408,6 +408,15 @@ impl App {
     }
 
     fn room(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        // 我聽各成員的音量（依名稱存，套到目前的成員編號）
+        if let Some(s) = &self.session {
+            let gains = snap
+                .members
+                .iter()
+                .filter_map(|m| self.settings.member_volumes.get(&m.name).map(|&g| (m.idx, g)))
+                .collect();
+            s.shared().set_user_gains(gains);
+        }
         // 房間資訊與邀請票
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -800,6 +809,9 @@ impl App {
         let joined = ch.mine.is_some();
         // 閉包裡借著 session，不能呼叫 &mut self 的方法：先記下，結束後再開始錄製
         let mut record: Option<KeyTarget> = None;
+        // 右鍵調整某位成員的音量：(名稱, 新倍率；None = 重設)
+        let mut vol_change: Option<(String, Option<f32>)> = None;
+        let volumes = self.settings.member_volumes.clone();
         let fill = if joined { ui.visuals().faint_bg_color } else { ui.visuals().panel_fill };
         egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -928,7 +940,33 @@ impl App {
                             if m.is_me {
                                 ui.label(RichText::new(format!("{}（我）", m.name)).strong());
                             } else {
-                                ui.label(&m.name);
+                                let gain = volumes.get(&m.name).copied().unwrap_or(1.0);
+                                let r = ui
+                                    .add(egui::Label::new(&m.name).sense(egui::Sense::click()))
+                                    .on_hover_text("右鍵：調整聽這個人的音量");
+                                if gain != 1.0 {
+                                    ui.colored_label(if gain == 0.0 { RED } else { AMBER }, pct(gain));
+                                }
+                                r.context_menu(|ui| {
+                                    ui.label(RichText::new(format!("{} 的音量", m.name)).strong());
+                                    let mut pos = gain_to_pos(gain);
+                                    ui.horizontal(|ui| {
+                                        if ui.add(egui::Slider::new(&mut pos, 0.0..=1.0).show_value(false)).changed() {
+                                            vol_change = Some((m.name.clone(), Some(pos_to_gain(pos))));
+                                        }
+                                        ui.label(pct(pos_to_gain(pos)));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        if ui.button("靜音").clicked() {
+                                            vol_change = Some((m.name.clone(), Some(0.0)));
+                                        }
+                                        if ui.button("重設為 100%").clicked() {
+                                            vol_change = Some((m.name.clone(), None));
+                                            ui.close();
+                                        }
+                                    });
+                                    ui.weak("只影響你聽到的音量");
+                                });
                             }
                             if m.listen && !m.talk {
                                 ui.weak("只聽");
@@ -942,6 +980,16 @@ impl App {
         });
         if let Some(t) = record {
             self.start_recording(t);
+        }
+        if let Some((name, v)) = vol_change {
+            match v {
+                Some(g) if (g - 1.0).abs() > 0.005 => {
+                    self.settings.member_volumes.insert(name, g);
+                }
+                _ => {
+                    self.settings.member_volumes.remove(&name);
+                }
+            }
         }
     }
 
@@ -1119,5 +1167,37 @@ fn talk_label(m: TalkMode) -> &'static str {
         TalkMode::Voice => "偵測說話",
         TalkMode::Open => "一直開麥",
         TalkMode::Ptt => "按鍵說話",
+    }
+}
+
+/// 成員音量滑桿：前半段 0～100%、後半段 100～1000%（直接線性的話 0～100% 只佔一小段，很難調）
+fn pos_to_gain(pos: f32) -> f32 {
+    let pos = pos.clamp(0.0, 1.0);
+    if pos <= 0.5 { pos * 2.0 } else { 1.0 + (pos - 0.5) * 18.0 }
+}
+
+fn gain_to_pos(gain: f32) -> f32 {
+    if gain <= 1.0 { gain.max(0.0) / 2.0 } else { (0.5 + (gain - 1.0) / 18.0).min(1.0) }
+}
+
+/// 倍率 → 「150%」（取到 5% 的整數倍）
+fn pct(gain: f32) -> String {
+    format!("{:.0}%", (gain * 20.0).round() * 5.0)
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+
+    #[test]
+    fn slider_mapping() {
+        assert_eq!(pos_to_gain(0.0), 0.0);
+        assert_eq!(pos_to_gain(0.5), 1.0);
+        assert_eq!(pos_to_gain(1.0), 10.0);
+        for g in [0.0, 0.3, 1.0, 2.5, 10.0] {
+            assert!((pos_to_gain(gain_to_pos(g)) - g).abs() < 1e-4, "{g}");
+        }
+        assert_eq!(pct(1.0), "100%");
+        assert_eq!(pct(10.0), "1000%");
     }
 }

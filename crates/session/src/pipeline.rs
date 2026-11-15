@@ -160,6 +160,8 @@ pub struct Shared {
     jitter: Mutex<HashMap<SessionIdx, JitterBuffer>>,
     /// 每位說話者最近一次收到的時間與 via_mask
     last_heard: Mutex<HashMap<SessionIdx, (Instant, u64)>>,
+    /// 我聽某位成員的音量倍率（右鍵調整；沒有 = 1.0）
+    user_gain: Mutex<HashMap<SessionIdx, f32>>,
     out_stats: Arc<StreamStats>,
     underrun_base: AtomicU64,
 }
@@ -202,6 +204,7 @@ impl Shared {
             epoch: Instant::now(),
             jitter: Default::default(),
             last_heard: Default::default(),
+            user_gain: Default::default(),
             out_stats: Arc::new(StreamStats::default()),
             underrun_base: AtomicU64::new(0),
         }
@@ -321,6 +324,14 @@ impl Shared {
         let mut v: Vec<_> = lh.into_iter().map(|(i, via)| (i, self.channels_of(via))).collect();
         v.sort_by_key(|(i, _)| *i);
         v
+    }
+
+    /// 設定我聽各成員的音量倍率（整份換掉；沒列到的人 = 1.0）
+    pub fn set_user_gains(&self, gains: HashMap<SessionIdx, f32>) {
+        let mut g = self.user_gain.lock().unwrap();
+        if *g != gains {
+            *g = gains;
+        }
     }
 
     pub fn forget(&self, idx: SessionIdx) {
@@ -836,8 +847,10 @@ fn spawn_playback(
             }
             // 優先頻道有人說話：其他人的聲音壓低
             let ducking = routed.iter().any(|(_, r)| r.priority);
+            let user_gain = shared.user_gain.lock().unwrap().clone();
             for (idx, r) in &routed {
                 let g = if ducking && !r.priority { r.gain * DUCK_GAIN } else { r.gain };
+                let g = g * user_gain.get(idx).copied().unwrap_or(1.0);
                 mix_into_stereo(&mut mix, &voices[idx], g, r.pan);
             }
             let vol = load_f32(&shared.volume);

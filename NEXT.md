@@ -164,6 +164,7 @@
 - [ ] GitHub Pages 備援託管
 
 ## 7. M8：打磨 — 進行中
+- [x] **每個人的音量**（2026-11-16）：我聽某位成員的音量 0～1000%（只影響自己），依**成員名稱**存（網頁版成員每次身分不同）。桌面版：成員名單右鍵（`settings.member_volumes` → `Shared::set_user_gains`）；網頁版：長按／右鍵成員名字跳出面板（localStorage `memberVolumes` → worklet `mv_set_user_gain`）。滑桿前半段 0～100%、後半段 100～1000%
 - [x] **一鍵更新**（2026-11-16，`desktop/src/update.rs`）：提示列「立即更新」→ 下載 Release 的 `multivoice.exe` 到 `.new`、
   核對大小與 GitHub 的 SHA-256 → 執行中的 exe 改名 `.old`、新檔換上（失敗就還原）→ 帶原參數加 `--restarted` 重新啟動；
   在房間裡更新會帶 `--auto-join <目前的邀請票>` 自動回到房間；`.old` 下次啟動時刪掉。

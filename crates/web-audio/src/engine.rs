@@ -86,6 +86,8 @@ pub struct Engine {
     pub cues: bool,
     pub volume: f32,
     pub gate_db: f32,
+    /// 我聽某位成員的音量倍率（長按／右鍵調整；沒有 = 1.0）
+    pub user_gain: BTreeMap<SessionIdx, f32>,
     // 擷取
     enc: Option<Encoder>,
     vad: Vad,
@@ -133,6 +135,7 @@ impl Engine {
             cues: true,
             volume: 1.0,
             gate_db: DEFAULT_GATE_DBFS,
+            user_gain: BTreeMap::new(),
             enc: Encoder::new(BITRATE),
             vad: Vad::new(),
             cap: Vec::with_capacity(FRAME_SAMPLES),
@@ -324,6 +327,7 @@ impl Engine {
         let ducking = routed.iter().any(|(_, r)| r.priority);
         for (idx, r) in &routed {
             let g = if ducking && !r.priority { r.gain * DUCK_GAIN } else { r.gain };
+            let g = g * self.user_gain.get(idx).copied().unwrap_or(1.0);
             mix_into_stereo(&mut self.mix, &self.speakers[idx].buf, g, r.pan);
         }
         if self.deafened {
@@ -464,6 +468,22 @@ mod tests {
         assert_eq!(b.speaking(), vec![(7, 1 << 3)]);
         // 400 × 128 取樣 ≈ 53 幀，扣掉緩衝
         assert!(b.totals().decoded > 40, "{}", b.totals().decoded);
+
+        // 我把這個人調成 0：不出聲（頻道音量不變）
+        b.user_gain.insert(7, 0.0);
+        let mut e = 0f32;
+        for i in 0..50 {
+            a.process(Some(&tone(&mut ph, 0.3, 128)), &mut l, &mut r);
+            for (kind, _, seq, payload) in packets(&mut a) {
+                b.push_packet(&down(7, 1 << 3, kind, seq, &payload));
+            }
+            b.process(None, &mut bl, &mut br);
+            if i >= 10 {
+                e += bl.iter().map(|x| x * x).sum::<f32>();
+            }
+        }
+        assert!(e < 1e-6, "個人音量 0：{e}");
+        b.user_gain.clear();
 
         // 頻道音量 0：不出聲
         b.slots[3] = Some(ChannelMix { volume: 0.0, pan: 0.0, priority: false });

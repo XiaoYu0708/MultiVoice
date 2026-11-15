@@ -29,6 +29,11 @@ const joined = new Map();
 /** channel ids whose PTT button is held */
 const held = new Set();
 const cards = new Map();
+/** how loud I hear each member: display name -> gain 0..10 (long-press / right-click a name). By name because
+ * web members get a new identity every time */
+const memberVolumes = store.get('memberVolumes', {});
+/** member idx -> gain last sent to the worklet */
+let sentGains = new Map();
 /** channel ids whose member list is expanded (collapsed by default) */
 const expanded = new Set();
 let sentSlots = new Map();     // slot -> JSON of what was sent to the worklet
@@ -111,6 +116,7 @@ async function startAudio() {
     try { navigator.mediaSession.metadata = new MediaMetadata({ title: 'MultiVoice', artist: '語音房間' }); } catch {}
   }
   sentSlots = new Map();
+  sentGains = new Map();
   pushSettings();
   await enableMic();
 }
@@ -371,7 +377,86 @@ function refresh() {
   // channels that disappeared
   for (const id of [...joined.keys()]) if (!state.channels.some((c) => c.id === id)) { joined.delete(id); held.delete(id); }
   syncAudio();
+  syncGains();
   renderRoom();
+}
+
+// ---------------------------------------------------------------- per-member volume
+// slider: first half 0-100 %, second half 100-1000 % (a linear 0-1000 slider makes 0-100 % hard to set)
+const posToGain = (p) => (p <= 0.5 ? p * 2 : 1 + (p - 0.5) * 18);
+const gainToPos = (g) => (g <= 1 ? g / 2 : Math.min(1, 0.5 + (g - 1) / 18));
+const pct = (g) => `${Math.round(g * 20) * 5}%`;
+
+function syncGains() {
+  if (!state) return;
+  const want = new Map();
+  for (const m of state.members) {
+    if (m.me) continue;
+    const g = memberVolumes[m.name];
+    if (g !== undefined && g !== 1) want.set(m.idx, g);
+  }
+  for (const [idx, g] of want) if (sentGains.get(idx) !== g) post({ t: 'ugain', idx, gain: g });
+  for (const idx of sentGains.keys()) if (!want.has(idx)) post({ t: 'ugain', idx, gain: -1 });
+  sentGains = want;
+}
+
+let volTarget = null;
+
+function openVolume(idx) {
+  if (!state || idx === state.me) return;
+  const name = memberName(idx);
+  volTarget = name;
+  $('#vol-name').textContent = `${name} 的音量`;
+  $('#vol-range').value = Math.round(gainToPos(memberVolumes[name] ?? 1) * 1000);
+  showVolume();
+  $('#vol-pop').hidden = false;
+}
+
+function showVolume() {
+  const g = posToGain(Number($('#vol-range').value) / 1000);
+  $('#vol-val').textContent = pct(g);
+}
+
+function setVolume(g) {
+  if (!volTarget) return;
+  if (Math.abs(g - 1) < 0.005) delete memberVolumes[volTarget];
+  else memberVolumes[volTarget] = Math.round(g * 100) / 100;
+  store.set('memberVolumes', memberVolumes);
+  $('#vol-range').value = Math.round(gainToPos(g) * 1000);
+  showVolume();
+  syncGains();
+  renderRoom();
+}
+
+$('#vol-range').addEventListener('input', () => setVolume(posToGain(Number($('#vol-range').value) / 1000)));
+$('#vol-mute').addEventListener('click', () => setVolume(0));
+$('#vol-reset').addEventListener('click', () => setVolume(1));
+$('#vol-done').addEventListener('click', () => { $('#vol-pop').hidden = true; volTarget = null; });
+$('#vol-pop').addEventListener('click', (e) => { if (e.target.id === 'vol-pop') $('#vol-done').click(); });
+
+/** long-press (phones) or right-click (computers) a member name to set their volume */
+function bindVolumeGestures(list) {
+  let timer = 0, start = null;
+  const cancel = () => { clearTimeout(timer); timer = 0; };
+  list.addEventListener('contextmenu', (e) => {
+    const li = e.target.closest('li[data-idx]');
+    if (!li) return;
+    e.preventDefault();
+    cancel();
+    openVolume(Number(li.dataset.idx));
+  });
+  list.addEventListener('pointerdown', (e) => {
+    const li = e.target.closest('li[data-idx]');
+    if (!li || e.pointerType === 'mouse') return;
+    start = [e.clientX, e.clientY];
+    cancel();
+    timer = setTimeout(() => { timer = 0; openVolume(Number(li.dataset.idx)); }, 500);
+  });
+  list.addEventListener('pointermove', (e) => {
+    if (timer && start && Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 10) cancel();
+  });
+  list.addEventListener('pointerup', cancel);
+  list.addEventListener('pointercancel', cancel);
 }
 
 // ---------------------------------------------------------------- rendering
@@ -411,6 +496,7 @@ function makeCard(id) {
     toggle: q('.members-toggle'), summary: q('.speaking-summary'),
     mode: q('.mode'), vol: q('.vol'), volVal: q('.vol-val'), ptt: q('.ptt') };
   card.join.addEventListener('click', () => (joined.has(id) ? leaveChannel(id) : joinChannel(id)));
+  bindVolumeGestures(card.chips);
   card.toggle.addEventListener('click', () => {
     if (!expanded.delete(id)) expanded.add(id);
     renderRoom();
@@ -459,9 +545,11 @@ function updateCard(card, ch) {
   card.chips.replaceChildren(...ch.members.map((m) => {
     const li = document.createElement('li');
     li.dataset.idx = m.idx;
-    li.textContent = memberName(m.idx);
+    const name = memberName(m.idx);
+    li.textContent = name;
     if (m.idx === state.me) li.classList.add('me');
-    const tag = !m.talk ? '只聽' : !m.listen ? '不聽' : '';
+    const g = m.idx === state.me ? undefined : memberVolumes[name];
+    const tag = [!m.talk ? '只聽' : !m.listen ? '不聽' : '', g !== undefined && g !== 1 ? pct(g) : ''].filter(Boolean).join(' ');
     if (tag) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = tag; li.append(t); }
     return li;
   }));

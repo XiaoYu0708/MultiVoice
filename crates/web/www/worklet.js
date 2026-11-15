@@ -46,6 +46,7 @@ class MvEngine extends AudioWorkletProcessor {
       case 'flags': x.mv_set_flags(h, m.muted ? 1 : 0, m.deafened ? 1 : 0, m.cues ? 1 : 0); break;
       case 'volume': x.mv_set_volume(h, m.v); break;
       case 'gate': x.mv_set_gate(h, m.db); break;
+      case 'ugain': x.mv_set_user_gain(h, m.idx, m.gain); break;
     }
   }
 

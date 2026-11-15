@@ -157,6 +157,12 @@ button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 5
 .new-channel { display: flex; gap: 8px; margin-top: 12px; }
 .new-channel input { flex: 1; }
 
+.chips li[data-idx] { cursor: context-menu; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.sheet-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+.sheet { width: min(640px, 100%); border-radius: var(--radius) var(--radius) 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 14px; }
+.sheet .row { gap: 12px; }
+.sheet .row button { flex: 1; }
+.vol-val-big { min-width: 4.5em; text-align: right; font-size: 1.1rem; }
 .settings summary { cursor: pointer; font-weight: 600; }
 .settings[open] summary { margin-bottom: 12px; }
 
