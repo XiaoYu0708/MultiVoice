@@ -1,0 +1,39 @@
+# MultiVoice 基礎設施（跑在有固定公開 IP 的這台電腦，見 PLAN.md §7.3）
+#
+#   caddy       HTTPS 憑證（Let's Encrypt）+ 網頁版 + 反向代理 relay
+#   iroh-relay  自架 relay；憑證直接讀 Caddy 申請好的檔案（Reloading 模式，自動跟著續期）
+#
+# 對外需要轉發到這台電腦的埠：TCP 80、TCP 443、UDP 7842
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+name: multivoice
+
+services:
+  caddy:
+    image: caddy:2.11
+    restart: unless-stopped
+    ports:
+      - "80:80"     # ACME HTTP-01 驗證、轉址到 HTTPS
+      - "443:443"   # HTTPS（網頁版 + relay 的 WebSocket）
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  iroh-relay:
+    # 版本必須與 Cargo.lock 中的 iroh 一致
+    image: n0computer/iroh-relay:v1.4.1
+    restart: unless-stopped
+    command: ["--config-path", "/etc/iroh-relay/relay.toml"]
+    ports:
+      - "7842:7842/udp"   # QUIC 位址探測（QAD），幫助打洞；不經 Caddy
+    volumes:
+      - ./iroh-relay.toml:/etc/iroh-relay/relay.toml:ro
+      - caddy_data:/caddy-data:ro
+    depends_on:
+      - caddy
+
+volumes:
+  caddy_data:
+  caddy_config:

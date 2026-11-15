@@ -1,0 +1,18 @@
+# iroh-relay 1.4.1 設定（欄位見 iroh-relay crate 的 src/main.rs `Config`）
+
+enable_relay = true
+# 只剩 captive portal 偵測會用到，不對外
+http_bind_addr = "[::]:8080"
+# QUIC 位址探測：讓客戶端得知自己的公開位址，提高打洞成功率
+enable_quic_addr_discovery = true
+enable_metrics = false
+# TODO（M6）：改用 shared_token 限制只有 MultiVoice 客戶端能使用，並設定每客戶端流量上限
+access = "everyone"
+
+[tls]
+https_bind_addr = "[::]:8443"
+quic_bind_addr = "[::]:7842"
+# 讀 Caddy 申請好的憑證檔，檔案更新（續期）時自動重新載入
+cert_mode = "Reloading"
+manual_cert_path = "/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.xiaoyu0708.ip-ddns.com/relay.xiaoyu0708.ip-ddns.com.crt"
+manual_key_path = "/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.xiaoyu0708.ip-ddns.com/relay.xiaoyu0708.ip-ddns.com.key"
