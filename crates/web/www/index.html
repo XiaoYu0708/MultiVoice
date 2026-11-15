@@ -104,6 +104,14 @@
     </label>
     <label class="check"><input id="cues" type="checkbox"> 開／關麥提示音</label>
     <label class="check"><input id="wakelock" type="checkbox"> 在房間裡時保持螢幕開啟（手機建議開）</label>
+    <label id="bg-talk-row" class="field" hidden>
+      <span>iPhone 在遊戲中說話的方式</span>
+      <select id="bgTalk">
+        <option value="0">浮動視窗（已確認可以）</option>
+        <option value="1">通話連線（實驗，不用開浮動視窗）</option>
+      </select>
+      <small class="muted">「通話連線」模仿 Discord 網頁版，讓 iPhone 把這個頁面當成通話。改了要離開房間再加入才生效。</small>
+    </label>
     <label id="bg-listen-row" class="field" hidden>
       <span>iPhone 沒開浮動視窗就切到背景時</span>
       <select id="bgListen">

@@ -27,6 +27,8 @@ const settings = {
   wakelock: store.get('wakelock', true),
   // iPhone in the background: 0 = off, 1 = keep playing via Web Audio, 2 = play through a media element
   bgListen: store.get('bgListen', 1),
+  // iPhone: how to keep talking in the background — 0 = floating window, 1 = local WebRTC call (experiment)
+  bgTalk: store.get('bgTalk', 0),
 };
 /** channel id -> { mode, listen, volume } for channels I joined */
 const joined = new Map();
@@ -136,6 +138,7 @@ async function enableMic() {
     if (!ctx || !node) { stream.getTracks().forEach((t) => t.stop()); return; }
     micStream = stream;
     micWanted = true;
+    if (IOS && settings.bgTalk === 1) startRtcKeepAlive(stream.getAudioTracks()[0]);
     micSource = ctx.createMediaStreamSource(stream);
     micSource.connect(node);
     const track = stream.getAudioTracks()[0];
@@ -162,6 +165,7 @@ function showMicWarning(text, retry) {
 $('#mic-retry').addEventListener('click', () => { ctx?.resume(); enableMic(); });
 
 function stopAudio() {
+  stopRtcKeepAlive();
   micStream?.getTracks().forEach((t) => t.stop());
   micStream = null;
   micWanted = false;
@@ -234,12 +238,59 @@ function enterRoom() {
   voiceLoop(room);
   setWakeLock(settings.wakelock);
   $('#ios-note').hidden = !IOS;
+  if (IOS && settings.bgTalk === 1) {
+    $('#ios-note').textContent = '實驗中：「通話連線」模式，直接切到遊戲試試還能不能說話；不行的話到「音訊設定」改回浮動視窗。';
+  }
   if (pipSupported()) {
     $('#pip-row').hidden = false;
     $('#pip-note').hidden = false;
     // iPhone: the floating window is how you talk while gaming, so make it the obvious button
     $('#pip-btn').className = IOS ? 'primary' : 'ghost';
     startPip();
+  }
+}
+
+// ---------------------------------------------------------------- local WebRTC "call" (experiment)
+// Discord's web client keeps talking in the iPhone background without a floating window because it is a WebRTC
+// call. Our audio does not go through WebRTC, so build a call that never leaves the phone (two peer connections
+// in this page) and attach the mic track to it, hoping iOS then treats the page as a call. Audio itself still goes
+// through our own engine and connection.
+let rtc = null;
+
+function rtcActive() {
+  return !!rtc && ['connected', 'connecting', 'new'].includes(rtc.a.connectionState);
+}
+
+function stopRtcKeepAlive() {
+  if (!rtc) return;
+  try { rtc.a.close(); rtc.b.close(); } catch {}
+  rtc = null;
+}
+
+async function startRtcKeepAlive(track) {
+  stopRtcKeepAlive();
+  if (!track || typeof RTCPeerConnection === 'undefined') return;
+  const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+  const me = { a, b };
+  rtc = me;
+  try {
+    a.onicecandidate = (e) => { if (e.candidate) b.addIceCandidate(e.candidate).catch(() => {}); };
+    b.onicecandidate = (e) => { if (e.candidate) a.addIceCandidate(e.candidate).catch(() => {}); };
+    a.addTrack(track, new MediaStream([track]));
+    a.onconnectionstatechange = () => {
+      if (rtc !== me) return;
+      if (a.connectionState === 'connected') log('通話連線已建立（背景說話實驗）');
+      if (a.connectionState === 'failed') log('通話連線失敗');
+    };
+    const offer = await a.createOffer();
+    await a.setLocalDescription(offer);
+    await b.setRemoteDescription(offer);
+    const answer = await b.createAnswer();
+    await b.setLocalDescription(answer);
+    await a.setRemoteDescription(answer);
+  } catch (ex) {
+    log('無法建立通話連線：' + (ex.message || ex));
+    if (rtc === me) stopRtcKeepAlive();
   }
 }
 
@@ -617,7 +668,9 @@ bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudi
 bindSetting('cues', 'cues', null, pushSettings);
 bindSetting('wakelock', 'wakelock', null, (on) => setWakeLock(on && !!room));
 bindSetting('bgListen', 'bgListen', null, null);
+bindSetting('bgTalk', 'bgTalk', null, null);
 $('#bg-listen-row').hidden = !IOS;
+$('#bg-talk-row').hidden = !IOS;
 renderToggles();
 
 async function setWakeLock(on) {
@@ -659,6 +712,8 @@ function enterBackground() {
   if (!IOS || !room || !ctx || settings.bgListen === 0) return;
   // floating window open: iOS keeps recording, so keep the mic (verified on iPhone 2026-11-16)
   if (pipActive()) return;
+  // local WebRTC call active: iOS may treat the page as a call and keep recording (experiment)
+  if (rtcActive()) return;
   if (micStream) {
     micStream.getTracks().forEach((t) => t.stop());
     try { micSource?.disconnect(); } catch {}
