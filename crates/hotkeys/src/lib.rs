@@ -8,7 +8,7 @@ mod keys;
 #[cfg(windows)]
 mod hook;
 
-pub use keys::{Hotkey, Trigger, key_name, parse_key};
+pub use keys::{Hotkey, Trigger, VK_CONTROL, VK_MENU, VK_SHIFT, key_name, parse_key};
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -125,6 +125,15 @@ pub(crate) fn on_input(t: Trigger, down: bool) {
             *RECORDED.lock().unwrap() = Some(r);
         }
     }
+}
+
+/// 從其他來源補送按鍵事件。
+///
+/// 本程式自己的視窗在前景時，全域 hook 收不到大部分鍵盤事件（實測：中文輸入法會處理的鍵，
+/// 例如字母、空白、Alt 都收不到；F19、滑鼠側鍵收得到），所以 UI 要把自己收到的按鍵也送進來。
+/// 跟 hook 重複送同一個事件沒關係（重複的按下不算新的按下）。
+pub fn feed(t: Trigger, down: bool) {
+    on_input(t, down);
 }
 
 /// 啟動全域 hook（整個程式只需呼叫一次；重複呼叫直接回傳 Ok）

@@ -35,6 +35,10 @@ pub struct App {
     recording: Option<KeyTarget>,
     /// 全域按鍵監聽啟動失敗的原因
     hotkey_err: Option<String>,
+    /// 由本視窗補送給 hotkeys、目前按住的鍵（視窗失去焦點時要放開）
+    local_down: Vec<hotkeys::Trigger>,
+    /// 按了一次「刪除」、等待確認的頻道與時間
+    confirm_delete: Option<(u32, Instant)>,
 }
 
 /// 要設定的按鍵
@@ -88,6 +92,48 @@ impl App {
             recording: None,
             // 大廳就要能錄製按鍵，所以一開始就啟動監聽
             hotkey_err: hotkeys::start().err(),
+            local_down: Vec::new(),
+            confirm_delete: None,
+        }
+    }
+
+    /// 本視窗在前景時，全域 hook 收不到大部分鍵盤事件（見 `hotkeys::feed`），
+    /// 把 egui 收到的按鍵與修飾鍵變化補送過去：錄製按鍵、PTT、靜音鍵在本視窗裡也能用
+    fn feed_local_keys(&mut self, ctx: &egui::Context) {
+        // 在文字框打字時不算按鍵（否則輸入頻道名稱時打到 PTT 鍵的字母會開麥）
+        let typing = ctx.egui_wants_keyboard_input() && self.recording.is_none();
+        let (focused, keys, mods) = ctx.input(|i| {
+            let keys: Vec<(hotkeys::Trigger, bool)> = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key { key, physical_key, pressed, repeat: false, .. } => {
+                        egui_trigger(physical_key.unwrap_or(*key)).map(|t| (t, *pressed))
+                    }
+                    _ => None,
+                })
+                .collect();
+            (i.focused, keys, i.modifiers)
+        });
+        let mut want: Vec<(hotkeys::Trigger, bool)> = Vec::new();
+        if focused && !typing {
+            for (vk, on) in [(hotkeys::VK_CONTROL, mods.ctrl), (hotkeys::VK_MENU, mods.alt), (hotkeys::VK_SHIFT, mods.shift)] {
+                let t = hotkeys::Trigger::Key(vk);
+                if on != self.local_down.contains(&t) {
+                    want.push((t, on));
+                }
+            }
+            want.extend(keys);
+        } else {
+            // 失去焦點：之前補送的按下全部放開，避免卡住
+            want.extend(self.local_down.iter().map(|&t| (t, false)));
+        }
+        for (t, down) in want {
+            hotkeys::feed(t, down);
+            self.local_down.retain(|&x| x != t);
+            if down {
+                self.local_down.push(t);
+            }
         }
     }
 
@@ -348,7 +394,7 @@ impl App {
         ui.add_space(6.0);
         ui.label(RichText::new("頻道").strong());
         for ch in &snap.channels {
-            self.channel_card(ui, ch);
+            self.channel_card(ui, ch, snap.is_host);
         }
         // 新增頻道
         ui.horizontal(|ui| {
@@ -400,7 +446,8 @@ impl App {
     }
 
     /// 一個頻道：名稱（右鍵改名／刪除）、加入／離開、我的說話與收聽設定、頻道成員
-    fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView) {
+    /// `is_host`：房主才顯示改名／刪除
+    fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView, is_host: bool) {
         let Some(s) = &self.session else { return };
         let joined = ch.mine.is_some();
         // 閉包裡借著 session，不能呼叫 &mut self 的方法：先記下，結束後再開始錄製
@@ -411,30 +458,45 @@ impl App {
             ui.horizontal(|ui| {
                 if self.renaming.as_ref().is_some_and(|(id, _)| *id == ch.id) {
                     let (_, text) = self.renaming.as_mut().unwrap();
-                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(160.0));
+                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(150.0));
                     r.request_focus();
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        s.rename_channel(ch.id, text.trim());
+                    let ok = !text.trim().is_empty();
+                    if ok && (ui.small_button("確定").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                        let new = text.trim().to_string();
+                        // 這個頻道存的 PTT 鍵跟著新名稱走
+                        if let Some(k) = self.settings.ptt_keys.remove(&ch.name) {
+                            self.settings.ptt_keys.insert(new.clone(), k);
+                        }
+                        s.rename_channel(ch.id, &new);
                         self.renaming = None;
-                    } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    } else if ui.small_button("取消").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.renaming = None;
                     }
                 } else {
-                    let name = ui.add(egui::Label::new(RichText::new(&ch.name).strong()).sense(egui::Sense::click()));
-                    name.context_menu(|ui| {
-                        if ui.button("改名").clicked() {
-                            self.renaming = Some((ch.id, ch.name.clone()));
-                            ui.close();
-                        }
-                        if ch.id != DEFAULT_CHANNEL && ui.button("刪除頻道").clicked() {
-                            s.delete_channel(ch.id);
-                            ui.close();
-                        }
-                    });
-                    name.on_hover_text("右鍵：改名／刪除");
+                    ui.label(RichText::new(&ch.name).strong());
+                    ui.weak(format!("{} 人", ch.members.len()));
                 }
-                ui.weak(format!("{} 人", ch.members.len()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // 房主管理：刪除要按兩次（3 秒內）
+                    if is_host && self.renaming.is_none() {
+                        if ch.id != DEFAULT_CHANNEL {
+                            let confirming = self
+                                .confirm_delete
+                                .is_some_and(|(id, t)| id == ch.id && t.elapsed() < Duration::from_secs(3));
+                            if confirming {
+                                if ui.add(egui::Button::new(RichText::new("確定刪除").color(RED)).small()).clicked() {
+                                    s.delete_channel(ch.id);
+                                    self.confirm_delete = None;
+                                }
+                            } else if ui.small_button("刪除").on_hover_text("刪除這個頻道（所有人都會離開）").clicked() {
+                                self.confirm_delete = Some((ch.id, Instant::now()));
+                            }
+                        }
+                        if ui.small_button("改名").clicked() {
+                            self.renaming = Some((ch.id, ch.name.clone()));
+                        }
+                        ui.add_space(6.0);
+                    }
                     if joined {
                         if ui.small_button("離開").clicked() {
                             let _ = s.set_channel(ch.id, None);
@@ -586,6 +648,7 @@ impl eframe::App for App {
             self.saved = self.settings.clone();
         }
 
+        self.feed_local_keys(ui.ctx());
         let snap = self.session.as_ref().map(|s| s.snapshot());
         self.poll_recording(snap.as_ref());
         if let Some(snap) = &snap {
@@ -629,6 +692,16 @@ impl Drop for App {
     }
 }
 
+/// egui 的按鍵 → hotkeys 的按鍵（用名稱對應；Shift 才打得出的符號沒有對應）
+fn egui_trigger(key: egui::Key) -> Option<hotkeys::Trigger> {
+    let name = match key {
+        egui::Key::OpenBracket => "[",
+        egui::Key::CloseBracket => "]",
+        k => k.name(),
+    };
+    hotkeys::parse_key(name)
+}
+
 /// 加入某頻道時的設定：有存 PTT 鍵就用按鍵說話，否則用預設
 fn join_cfg(settings: &Settings, s: &Session, name: &str) -> ChannelCfg {
     let mut cfg = s.default_channel_cfg();
@@ -653,6 +726,8 @@ fn key_button(ui: &mut egui::Ui, recording: &Option<KeyTarget>, target: &KeyTarg
     let r = ui
         .add(egui::Button::new(text).small())
         .on_hover_text("按下要用的鍵（可搭配 Ctrl／Alt／Shift，也可以用滑鼠中鍵或側鍵）");
+    // 不留鍵盤焦點：否則錄到 Space／Enter 的同時，egui 會把它當成再按一次這個按鈕
+    r.surrender_focus();
     r.clicked() && !active
 }
 
