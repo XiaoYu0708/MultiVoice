@@ -1,5 +1,5 @@
 # Launch MultiVoice desktop and screenshot its window via PrintWindow (works even if covered).
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File toolsshot.ps1 -Exe <multivoice.exe> -Out <png> [-WaitMs 6000] [-Extra "--auto-join <ticket> --deafen"] [-KeepRunning]
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File tools/shot.ps1 -Exe <multivoice.exe> -Out <png> [-WaitMs 6000] [-Extra "--auto-join <ticket> --deafen"] [-KeepRunning]
 # Keep this file ASCII-only: Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI.
 param(
     [string]$Exe,
