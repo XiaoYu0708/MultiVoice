@@ -23,7 +23,7 @@ use protocol::auth::join_proof;
 use protocol::control::{
     ChannelInfo, ClientMsg, ErrorCode, HostAddr, HostMsg, MAX_SLOTS, MemberInfo, Subscription, Successor,
 };
-use protocol::ticket::Ticket;
+use protocol::ticket::{RoomId, Ticket};
 use protocol::voice::{Kind, VoiceUp};
 use protocol::{ALPN, ChannelId, NodeId, PROTOCOL_VERSION, SessionIdx};
 use tokio::sync::{mpsc, watch};
@@ -53,6 +53,8 @@ pub enum ClientEvent {
     Rtt(f64),
     /// 房主要離開：`session_idx` 以任期 `term` 接手，其他人改連 `host`
     MigrateTo { session_idx: SessionIdx, host: HostAddr, term: u64 },
+    /// 雙房主合併：目前的房主讓位，改連 `host`
+    MoveTo { host: HostAddr },
     /// 與房主的連線意外中斷（上層要找新房主，或呼叫 [`Client::give_up`]）
     HostLost(String),
     /// 已連上新房主
@@ -142,6 +144,8 @@ struct Inner {
     /// 連線代數；換連線或放棄時更新，`recv_voice` 等它
     generation: watch::Sender<u64>,
     successors: Mutex<Vec<Successor>>,
+    /// 見過的所有候補備用端點（累積；雙房主合併時要探測，名單更新後也不能忘）
+    seen_standbys: Mutex<Vec<HostAddr>>,
     standby: Mutex<Option<HostAddr>>,
     /// 收到 MigrateTo：舊連線結束時不要當成「房主失聯」
     migrating: AtomicBool,
@@ -215,6 +219,7 @@ impl Client {
             ev_tx,
             generation: watch::channel(0).0,
             successors: Mutex::new(Vec::new()),
+            seen_standbys: Mutex::new(Vec::new()),
             standby: Mutex::new(None),
             migrating: AtomicBool::new(false),
             dead: AtomicBool::new(false),
@@ -303,6 +308,11 @@ impl Client {
         self.inner.link.lock().unwrap().term
     }
 
+    /// 我的端點（探測其他房主時用）
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.inner.ep
+    }
+
     /// 我的 NodeId（成員身分）
     pub fn node_id(&self) -> NodeId {
         transport::node_id(&self.inner.ep.id())
@@ -325,6 +335,11 @@ impl Client {
     /// 房主候補名單（依接手順序）
     pub fn successors(&self) -> Vec<Successor> {
         self.inner.successors.lock().unwrap().clone()
+    }
+
+    /// 見過的所有候補備用端點（累積，包含已經不在名單上的）
+    pub fn seen_standbys(&self) -> Vec<HostAddr> {
+        self.inner.seen_standbys.lock().unwrap().clone()
     }
 
     /// 告訴房主「我可以當房主」：這是我預先建好的備用房主端點。換房主後會自動重送
@@ -469,6 +484,23 @@ impl Client {
     }
 }
 
+/// 探測某個端點是不是這個房間的房主（雙房主合併用）。是的話回傳 (任期, 連線人數)
+pub async fn probe_host(ep: &Endpoint, addr: EndpointAddr, room_id: RoomId) -> Result<(u64, u32)> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let conn = ep.connect(addr, ALPN).await.context("無法連線")?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        transport::write_msg(&mut send, &ClientMsg::HostProbe { room_id }).await?;
+        let r = match transport::read_msg::<HostMsg>(&mut recv).await? {
+            HostMsg::HostInfo { term, members } => Ok((term, members)),
+            other => Err(anyhow!("不是房主：{other:?}")),
+        };
+        conn.close(0u32.into(), b"probe done");
+        r
+    })
+    .await
+    .context("探測逾時")?
+}
+
 async fn timed_handshake(ep: &Endpoint, addr: EndpointAddr, ticket: &Ticket, name: &str) -> Result<Handshake> {
     tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(ep, addr, ticket, name)).await.context("加入逾時")?
 }
@@ -542,10 +574,24 @@ fn spawn_link_tasks(
                         let rtt = inner.started.elapsed().as_micros() as f64 / 1000.0 - t as f64 / 1000.0;
                         let _ = inner.ev_tx.send(ClientEvent::Rtt(rtt));
                     }
-                    Ok(HostMsg::Successors(list)) => *inner.successors.lock().unwrap() = list,
+                    Ok(HostMsg::Successors(list)) => {
+                        let mut seen = inner.seen_standbys.lock().unwrap();
+                        for s in &list {
+                            match seen.iter_mut().find(|h| h.id == s.host.id) {
+                                Some(h) => *h = s.host.clone(),
+                                None => seen.push(s.host.clone()),
+                            }
+                        }
+                        drop(seen);
+                        *inner.successors.lock().unwrap() = list;
+                    }
                     Ok(HostMsg::MigrateTo { session_idx, host, term }) => {
                         inner.migrating.store(true, Ordering::SeqCst);
                         let _ = inner.ev_tx.send(ClientEvent::MigrateTo { session_idx, host, term });
+                    }
+                    Ok(HostMsg::MoveTo { host }) => {
+                        inner.migrating.store(true, Ordering::SeqCst);
+                        let _ = inner.ev_tx.send(ClientEvent::MoveTo { host });
                     }
                     Ok(msg) => {
                         let ev = inner.room.lock().unwrap().apply(&msg);

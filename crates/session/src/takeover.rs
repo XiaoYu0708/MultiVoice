@@ -7,15 +7,20 @@
 //! - **非預期轉移**（[`Takeover::on_host_lost`]）：每 0.5 秒一輪，先試原房主（可能只是網路閃斷），
 //!   再依序試候補；排第 k 位的候補在失聯 k × 3 秒後、前面的都連不上時自己接手。20 秒都不成就放棄
 //!
-//! 還沒做（PLAN §5.3–5.4）：接手前的多數確認、雙房主時以任期決勝與合併。
-//! 所以「只有候補自己斷網、其實房主還在」時，他會自己開一個只有他的房間。
+//! - **雙房主合併**（PLAN §5.4，[`Takeover::start_merge_loop`]）：當房主的人每 3 秒探測「可能也在當房主」的端點
+//!   （前任房主、見過的所有候補備用端點）；同一房間有另一個房主時，人少的讓位（`MoveTo` 叫自己的成員改連過去，
+//!   然後停掉自己的房主）。人數相同比任期，再相同比端點 ID（小的贏）——雙方算出來的結果一定一致。
+//!   這涵蓋：候補自己斷網而自立房主、舊房主網路恢復、兩個候補同時接手
+//!
+//! 沒做 PLAN 的 `HostLostVote` 多數確認：斷網的人本來就湊不到票（PLAN 也規定 10 秒後仍升任），
+//! 最後還是要靠合併收尾，所以直接用合併處理。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use client_core::Client;
+use client_core::{Client, probe_host};
 use host_core::{Host, HostConfig, Seed};
 use iroh::{Endpoint, EndpointAddr};
 use protocol::control::{ClientMsg, HostAddr, HostMsg};
@@ -30,6 +35,8 @@ const RANK_DELAY: Duration = Duration::from_secs(3);
 const GIVE_UP_AFTER: Duration = Duration::from_secs(20);
 /// 計畫性轉移時，等新房主上線的時限
 const MIGRATE_TIMEOUT: Duration = Duration::from_secs(12);
+/// 當房主時多久檢查一次有沒有別的房主
+const MERGE_INTERVAL: Duration = Duration::from_secs(3);
 
 pub type Log = Arc<dyn Fn(String) + Send + Sync>;
 
@@ -43,6 +50,8 @@ pub struct Takeover {
     stop_redirector: Arc<Notify>,
     /// 正在找新房主
     busy: AtomicBool,
+    /// 升任前連的房主（合併時要探測它還在不在）
+    prev_host: Mutex<Option<EndpointAddr>>,
     log: Log,
 }
 
@@ -54,8 +63,82 @@ impl Takeover {
             host: Arc::new(Mutex::new(host)),
             stop_redirector: Arc::new(Notify::new()),
             busy: AtomicBool::new(false),
+            prev_host: Mutex::new(None),
             log,
         })
+    }
+
+    /// 雙房主合併的背景檢查（整個工作階段開一次；只有我當房主時才會探測）
+    pub fn start_merge_loop(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(MERGE_INTERVAL);
+            loop {
+                tick.tick().await;
+                if Arc::strong_count(&me) == 1 {
+                    return; // 工作階段已結束
+                }
+                if me.host().is_some() && !me.busy.load(Ordering::SeqCst) {
+                    me.merge_check().await;
+                }
+            }
+        });
+    }
+
+    /// 探測其他可能的房主；對方比較大就讓位
+    async fn merge_check(self: &Arc<Self>) {
+        let Some(host) = self.host() else { return };
+        let my_id = self.client.host_id();
+        let standby_id = self.standby.as_ref().map(|e| transport::node_id(&e.id()));
+        // 見過的所有候補備用端點（其中可能有人自己當了房主）
+        let mut targets: Vec<HostAddr> = self.client.seen_standbys();
+        if let Some(prev) = self.prev_host.lock().unwrap().clone() {
+            targets.push(transport::host_addr_of(&prev));
+        }
+        targets.retain(|t| t.id != my_id && Some(t.id) != standby_id);
+        targets.dedup_by(|a, b| a.id == b.id);
+        let room = self.client.ticket().room_id;
+        let mine = (host.member_count() as u32, host.term(), std::cmp::Reverse(my_id));
+        for t in targets {
+            let Ok(addr) = transport::endpoint_addr(&t) else { continue };
+            let Ok((term, members)) = probe_host(self.client.endpoint(), addr, room).await else { continue };
+            let theirs = (members, term, std::cmp::Reverse(t.id));
+            debug!("探測到另一個房主：人數 {members}、任期 {term}（我：人數 {}、任期 {}）", mine.0, mine.1);
+            if theirs > mine {
+                self.yield_to(&host, t).await;
+                return;
+            }
+        }
+    }
+
+    /// 讓位：叫所有人（含自己的客戶端）改連 `to`，停掉自己的房主，恢復轉址
+    async fn yield_to(self: &Arc<Self>, host: &Host, to: HostAddr) {
+        info!("雙房主：讓位給人比較多的房主");
+        (self.log)("房間曾分成兩邊，正在合併回人比較多的那邊…".into());
+        host.yield_to(to);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        host.stop();
+        *self.host.lock().unwrap() = None;
+        if let Some(ep) = self.standby.clone() {
+            // 房主停了，備用端點回去做轉址
+            tokio::spawn(self.clone().redirect_loop(ep));
+        }
+    }
+
+    /// 雙房主合併：目前的房主讓位，改連 `host`
+    pub async fn on_move(self: Arc<Self>, host: HostAddr) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let r = self.reconnect_until(transport::endpoint_addr(&host), MIGRATE_TIMEOUT).await;
+        self.busy.store(false, Ordering::SeqCst);
+        match r {
+            Ok(()) => (self.log)("已合併到另一邊的房間".into()),
+            Err(e) => {
+                debug!("合併失敗：{e:#}");
+                self.clone().on_host_lost().await;
+            }
+        }
     }
 
     /// 我目前是不是房主
@@ -115,8 +198,10 @@ impl Takeover {
         }
     }
 
-    /// 以任期 `term` 升任房主：用我看到的房間狀態啟動 host-core，自己的客戶端改連過去
-    async fn promote(&self, term: u64) -> Result<()> {
+    /// 以任期 `term` 升任房主：用我看到的房間狀態啟動 host-core，自己的客戶端改連過去。
+    /// 平常由 [`Takeover::on_migrate`] / [`Takeover::on_host_lost`] 呼叫（公開是為了測試雙房主）
+    pub async fn promote(&self, term: u64) -> Result<()> {
+        *self.prev_host.lock().unwrap() = Some(self.client.host_addr());
         let ep = self.standby.clone().ok_or_else(|| anyhow::anyhow!("沒有備用端點"))?;
         let me = self.client.node_id();
         let mut members: Vec<_> = self.client.members().into_iter().map(|m| (m.node_id, m.session_idx)).collect();

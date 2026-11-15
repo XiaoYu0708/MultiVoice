@@ -80,12 +80,16 @@ async fn connect_with(
     let standby = if standby { Some(transport::bind(transport::generate_secret(), RelaySetup::Disabled, true).await?) } else { None };
     let t = Takeover::new(c.clone(), standby.clone(), host, Arc::new(|_| {}));
     t.start_standby(false);
+    t.start_merge_loop();
     let (tx, ev) = mpsc::unbounded_channel();
     let t2 = t.clone();
     tokio::spawn(async move {
         while let Some(e) = raw.recv().await {
             match e {
-                ClientEvent::MigrateTo { .. } | ClientEvent::HostLost(_) if !react => {}
+                ClientEvent::MigrateTo { .. } | ClientEvent::HostLost(_) | ClientEvent::MoveTo { .. } if !react => {}
+                ClientEvent::MoveTo { host } => {
+                    tokio::spawn(t2.clone().on_move(host));
+                }
                 ClientEvent::MigrateTo { session_idx, host, term } => {
                     tokio::spawn(t2.clone().on_migrate(session_idx, host, term));
                 }
@@ -261,5 +265,54 @@ async fn second_successor_takes_over_when_first_is_gone() -> Result<()> {
         host.subscriptions().iter().any(|s| s.session_idx == c.c.session_idx() && s.channel == DEFAULT_CHANNEL)
     })
     .await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn split_brain_merges_back_into_bigger_room() -> Result<()> {
+    let (room, a, b, c) = three_member_room().await?;
+    let started = Instant::now();
+    let original = transport::node_id(&room.host_ep.id());
+
+    // 模擬「B 自己斷網、以為房主不見了」：B 自己升任房主，於是有兩個房主：
+    // 原房主（A、C，任期 1）與 B（只有 B，任期 2）
+    b.t.promote(2).await?;
+    assert!(b.t.host().is_some());
+    wait_until("原房主看到 B 離開", || room.host.member_count() == 2).await;
+
+    // B 的房主每 3 秒探測，發現原房主人比較多 → 讓位，B 合併回原房間
+    wait_until("B 合併回原房間", || b.t.host().is_none() && b.c.host_id() == original).await;
+    wait_until("原房間恢復三個人", || room.host.member_count() == 3).await;
+    println!("雙房主合併完成：{:?}", started.elapsed());
+    assert!(a.t.host().is_some(), "原房主不該讓位");
+    assert_eq!(c.c.host_id(), original, "C 不受影響");
+    // B 的訂閱也重新登記了
+    let bi = b.c.session_idx();
+    wait_until("B 的訂閱回到原房主", || {
+        room.host.subscriptions().contains(&Subscription { session_idx: bi, channel: DEFAULT_CHANNEL, listen: true, talk: true })
+    })
+    .await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_host_with_fewer_members_yields() -> Result<()> {
+    let (room, a, b, c) = three_member_room().await?;
+    let started = Instant::now();
+
+    // 模擬「原房主網路閃斷，B、C 已經轉到 B 當房主」：B 升任，C 改連 B；原房主只剩自己（A）
+    b.t.promote(2).await?;
+    let b_addr = transport::loopback_addr(b.standby.as_ref().unwrap());
+    c.c.reconnect(b_addr).await?;
+    let b_host = b.t.host().unwrap();
+    wait_until("B 那邊有 B、C", || b_host.member_count() == 2).await;
+
+    // 原房主（1 人）探測到 B（2 人）→ 讓位，A 也改連到 B
+    let b_id = transport::node_id(&b.standby.as_ref().unwrap().id());
+    wait_until("A 合併到 B", || a.t.host().is_none() && a.c.host_id() == b_id).await;
+    wait_until("B 那邊三個人", || b_host.member_count() == 3).await;
+    println!("舊房主讓位完成：{:?}", started.elapsed());
+    assert!(b.t.host().is_some(), "B 不該讓位");
+    assert_eq!(room.host.member_count(), 0, "原房主停掉後沒有人");
     Ok(())
 }

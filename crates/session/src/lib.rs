@@ -239,6 +239,7 @@ impl Session {
         {
             let _guard = rt.enter();
             takeover.start_standby(c.wait_online);
+            takeover.start_merge_loop();
         }
         let mut events = c.events;
         let (room2, shared2, client2, takeover2) = (room.clone(), shared.clone(), c.client.clone(), takeover.clone());
@@ -262,6 +263,10 @@ impl Session {
                     ClientEvent::MigrateTo { session_idx, host, term } => {
                         r.hush();
                         tokio::spawn(takeover2.clone().on_migrate(session_idx, host, term));
+                    }
+                    ClientEvent::MoveTo { host } => {
+                        r.hush();
+                        tokio::spawn(takeover2.clone().on_move(host));
                     }
                     ClientEvent::HostLost(_) => {
                         r.hush();

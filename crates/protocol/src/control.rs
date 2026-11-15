@@ -83,6 +83,8 @@ pub enum ClientMsg {
     DeleteChannel { channel: ChannelId },
     /// 我可以當房主：這是我預先建好的備用房主端點（M3）
     Standby(HostAddr),
+    /// 不加入，只問「你是不是這個房間的房主、有幾個人」（雙房主合併用；取代 Hello 當第一則訊息）
+    HostProbe { room_id: RoomId },
 }
 
 /// 房主 → 成員
@@ -113,6 +115,10 @@ pub enum HostMsg {
     Successors(Vec<Successor>),
     /// 計畫性轉移（房主要離開）：`session_idx` 這位成員以任期 `term` 接手，其他人改連 `host`（M3）
     MigrateTo { session_idx: SessionIdx, host: HostAddr, term: u64 },
+    /// 回應 [`ClientMsg::HostProbe`]：我是房主，任期與連線中的人數
+    HostInfo { term: u64, members: u32 },
+    /// 雙房主合併：這個房主要讓位，所有人改連 `host`（沒有人要接手）
+    MoveTo { host: HostAddr },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

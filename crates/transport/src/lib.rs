@@ -71,6 +71,15 @@ pub fn host_addr(ep: &Endpoint) -> HostAddr {
     HostAddr { id: node_id(&ep.id()), addrs, relay: a.relay_urls().next().map(|u| u.to_string()) }
 }
 
+/// `EndpointAddr` → [`HostAddr`]（可以放進協定訊息）
+pub fn host_addr_of(a: &EndpointAddr) -> HostAddr {
+    HostAddr {
+        id: node_id(&a.id),
+        addrs: a.ip_addrs().copied().collect(),
+        relay: a.relay_urls().next().map(|u| u.to_string()),
+    }
+}
+
 /// [`HostAddr`] → 可以撥號的 `EndpointAddr`
 pub fn endpoint_addr(h: &HostAddr) -> Result<EndpointAddr> {
     let relay = h.relay.as_deref().and_then(|u| u.parse::<RelayUrl>().ok()).map(TransportAddr::Relay);

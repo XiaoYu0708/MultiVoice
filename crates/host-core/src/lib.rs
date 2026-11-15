@@ -16,6 +16,7 @@
 //!   有變動就廣播 `Successors`（房主自己不在名單裡）
 //! - [`Host::migrate`]：計畫性轉移，廣播 `MigrateTo` 給第一候補接手
 //! - 新房主用 [`HostConfig::seed`]（自己客戶端看到的頻道與成員）建立初始狀態，成員重連後 `session_idx` 不變
+//! - 雙房主合併：回應 `HostProbe`（任期、人數）；讓位時 [`Host::yield_to`] 廣播 `MoveTo` 後 [`Host::stop`]
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -168,12 +169,39 @@ pub struct Host {
     cfg: Arc<HostConfig>,
     state: Arc<RwLock<State>>,
     stats: Arc<Mutex<HostStats>>,
+    /// 停止接受連線（讓位）
+    stop: Arc<tokio::sync::Notify>,
 }
 
 impl Host {
     pub fn new(cfg: HostConfig) -> Self {
         let state = State::new(cfg.seed.as_ref());
-        Self { cfg: Arc::new(cfg), state: Arc::new(RwLock::new(state)), stats: Default::default() }
+        Self {
+            cfg: Arc::new(cfg),
+            state: Arc::new(RwLock::new(state)),
+            stats: Default::default(),
+            stop: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    /// 連線中的人數（含房主自己的客戶端）
+    pub fn member_count(&self) -> usize {
+        self.state.read().unwrap().members.len()
+    }
+
+    /// 雙房主合併時讓位：通知所有人改連 `host`
+    pub fn yield_to(&self, host: HostAddr) {
+        info!("讓位給另一個房主");
+        self.state.read().unwrap().broadcast(HostMsg::MoveTo { host });
+    }
+
+    /// 停止當房主：不再接受連線，關掉所有成員的連線
+    pub fn stop(&self) {
+        self.stop.notify_one();
+        let st = self.state.read().unwrap();
+        for m in st.members.values() {
+            m.conn.close(4u32.into(), b"host stopped");
+        }
     }
 
     pub fn term(&self) -> u64 {
@@ -219,7 +247,11 @@ impl Host {
 
     /// 接受連線直到端點關閉
     pub async fn run(&self, ep: Endpoint) {
-        while let Some(incoming) = ep.accept().await {
+        loop {
+            let incoming = tokio::select! {
+                i = ep.accept() => match i { Some(i) => i, None => return },
+                _ = self.stop.notified() => return,
+            };
             let host = self.clone();
             tokio::spawn(async move {
                 let conn = match incoming.await {
@@ -319,6 +351,14 @@ impl Host {
         let reject = |code, msg: &str| HostMsg::Error { code, message: msg.to_string() };
 
         match transport::read_msg::<ClientMsg>(recv).await? {
+            // 另一個房主來探測（雙房主合併）：回報任期與人數就結束
+            ClientMsg::HostProbe { room_id } => {
+                if room_id == self.cfg.room_id {
+                    let members = self.state.read().unwrap().members.len() as u32;
+                    transport::write_msg(send, &HostMsg::HostInfo { term: self.cfg.term, members }).await?;
+                }
+                bail!("探測");
+            }
             ClientMsg::Hello { protocol_version, room_id } => {
                 if protocol_version != PROTOCOL_VERSION {
                     transport::write_msg(send, &reject(ErrorCode::ProtocolVersion, "版本不相容，請更新 MultiVoice")).await?;
