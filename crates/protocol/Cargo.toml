@@ -1,0 +1,8 @@
+[package]
+name = "protocol"
+description = "MultiVoice 協定：控制訊息、語音封包、邀請票、房間狀態（所有角色共用，需可編譯成 WASM）"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
