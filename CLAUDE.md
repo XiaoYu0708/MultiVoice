@@ -38,7 +38,8 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
 | `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音 |
-| `session` | 建房／加入（async）+ 音訊管線（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
+| `hotkeys` | 全域按鍵：LL hook（不攔截）、按鍵解析、錄製模式（只在 Windows 有作用） |
+| `session` | 建房／加入（async）+ 音訊管線（含 PTT／廣播／靜音鍵、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
 | `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
@@ -46,7 +47,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 伺服器端基礎設施在 `deploy/`（Docker：Caddy + 自架 iroh-relay，`relay.xiaoyu0708.ip-ddns.com`）。
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 36 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 45 個；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 端對端煙霧測試：背景跑 `multivoice-cli host --open-mic --volume 0 --seconds N`，從輸出抓 `mv1…` 邀請票，再跑 `multivoice-cli join <票> --profile 別的名稱 …`
 - **UI 驗證**：`tools/shot.ps1` 會啟動桌面版、用 PrintWindow 截圖（不怕被其他視窗蓋住），再用 Read 看圖：

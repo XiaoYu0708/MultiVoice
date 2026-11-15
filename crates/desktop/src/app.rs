@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
 use protocol::DEFAULT_CHANNEL;
-use session::{Connected, Relays, Session, Snapshot, TalkMode};
+use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkeys};
 
 use crate::settings::Settings;
 use crate::style::{AMBER, BLUE, GREEN, RED};
@@ -31,6 +31,19 @@ pub struct App {
     new_channel: String,
     /// 正在改名的頻道與輸入中的名稱
     renaming: Option<(u32, String)>,
+    /// 正在錄製哪個按鍵
+    recording: Option<KeyTarget>,
+    /// 全域按鍵監聽啟動失敗的原因
+    hotkey_err: Option<String>,
+}
+
+/// 要設定的按鍵
+#[derive(Clone, Debug, PartialEq)]
+enum KeyTarget {
+    /// 頻道的 PTT 鍵（頻道 ID、名稱）
+    Channel(u32, String),
+    Broadcast,
+    Mute,
 }
 
 enum Auto {
@@ -72,8 +85,44 @@ impl App {
             applied: None,
             new_channel: String::new(),
             renaming: None,
+            recording: None,
+            // 大廳就要能錄製按鍵，所以一開始就啟動監聽
+            hotkey_err: hotkeys::start().err(),
         }
     }
+
+    fn start_recording(&mut self, t: KeyTarget) {
+        hotkeys::start_recording();
+        self.recording = Some(t);
+    }
+
+    /// 錄製完成：存進設定，頻道的 PTT 鍵立即套用
+    fn poll_recording(&mut self, snap: Option<&Snapshot>) {
+        if self.recording.is_none() {
+            return;
+        }
+        let Some(r) = hotkeys::take_recorded() else {
+            if !hotkeys::is_recording() {
+                self.recording = None;
+            }
+            return;
+        };
+        let t = self.recording.take().unwrap();
+        let hotkeys::Recorded::Key(k) = r else { return };
+        match t {
+            KeyTarget::Broadcast => self.settings.broadcast_key = Some(k.to_string()),
+            KeyTarget::Mute => self.settings.mute_key = Some(k.to_string()),
+            KeyTarget::Channel(id, name) => {
+                self.settings.ptt_keys.insert(name, k.to_string());
+                let mine = snap.and_then(|s| s.channels.iter().find(|c| c.id == id)).and_then(|c| c.mine);
+                if let (Some(s), Some(cfg)) = (&self.session, mine) {
+                    let _ = s.set_channel(id, Some(ChannelCfg { talk: TalkMode::Ptt, ptt_key: Some(k), ..cfg }));
+                }
+            }
+        }
+    }
+
+
 
     fn start_host(&mut self) {
         let (tx, rx) = mpsc::channel();
@@ -110,6 +159,12 @@ impl App {
             Ok(s) => {
                 if self.start_deafened {
                     s.set_deafened(true);
+                }
+                // 自動加入的大廳也套用存好的 PTT 鍵
+                if let Some(lobby) = s.snapshot().channels.iter().find(|c| c.id == DEFAULT_CHANNEL)
+                    && self.settings.ptt_keys.contains_key(&lobby.name)
+                {
+                    let _ = s.set_channel(DEFAULT_CHANNEL, Some(join_cfg(&self.settings, &s, &lobby.name)));
                 }
                 self.session = Some(s);
                 self.applied = Some(self.settings.audio_opts());
@@ -201,6 +256,36 @@ impl App {
         if self.settings.denoise {
             ui.add(egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).text("小聲講話保留"));
             ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
+        }
+
+        ui.add_space(8.0);
+        ui.label(RichText::new("全域按鍵（遊戲在前景時也有效）").strong());
+        for (target, label) in [(KeyTarget::Broadcast, "廣播鍵（按住對所有頻道說話）"), (KeyTarget::Mute, "靜音鍵（按一下切換）")] {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let cur = match target {
+                    KeyTarget::Broadcast => self.settings.broadcast_key.clone(),
+                    _ => self.settings.mute_key.clone(),
+                };
+                if key_button(ui, &self.recording, &target, cur.as_deref()) {
+                    self.start_recording(target.clone());
+                }
+                if cur.is_some() && ui.small_button("清除").clicked() {
+                    match target {
+                        KeyTarget::Broadcast => self.settings.broadcast_key = None,
+                        _ => self.settings.mute_key = None,
+                    }
+                }
+            });
+        }
+        ui.checkbox(&mut self.settings.cues, "開／關麥提示音");
+        if let Some(e) = &self.hotkey_err {
+            ui.colored_label(RED, format!("全域按鍵無法使用：{e}"));
+        } else if !hotkeys::is_admin() {
+            ui.weak("如果遊戲以系統管理員身分執行，這裡也要以管理員身分執行，否則遊戲在前景時收不到按鍵");
+            if ui.small_button("以系統管理員身分重新啟動").clicked() && hotkeys::relaunch_as_admin() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 
@@ -318,6 +403,8 @@ impl App {
     fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView) {
         let Some(s) = &self.session else { return };
         let joined = ch.mine.is_some();
+        // 閉包裡借著 session，不能呼叫 &mut self 的方法：先記下，結束後再開始錄製
+        let mut record: Option<KeyTarget> = None;
         let fill = if joined { ui.visuals().faint_bg_color } else { ui.visuals().panel_fill };
         egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -353,7 +440,7 @@ impl App {
                             let _ = s.set_channel(ch.id, None);
                         }
                     } else if ui.small_button("加入").clicked() {
-                        let _ = s.set_channel(ch.id, Some(s.default_channel_cfg()));
+                        let _ = s.set_channel(ch.id, Some(join_cfg(&self.settings, s, &ch.name)));
                     }
                 });
             });
@@ -367,10 +454,17 @@ impl App {
                         .width(110.0)
                         .selected_text(talk_label(cfg.talk))
                         .show_ui(ui, |ui| {
-                            for m in [TalkMode::Off, TalkMode::Voice, TalkMode::Open] {
+                            for m in [TalkMode::Off, TalkMode::Voice, TalkMode::Open, TalkMode::Ptt] {
                                 ui.selectable_value(&mut cfg.talk, m, talk_label(m));
                             }
                         });
+                    if cfg.talk == TalkMode::Ptt {
+                        let cur = self.settings.ptt_keys.get(&ch.name).cloned();
+                        let t = KeyTarget::Channel(ch.id, ch.name.clone());
+                        if key_button(ui, &self.recording, &t, cur.as_deref()) {
+                            record = Some(t);
+                        }
+                    }
                     if cfg.mix.priority {
                         ui.colored_label(AMBER, "優先");
                     }
@@ -388,6 +482,21 @@ impl App {
                     }));
                     ui.checkbox(&mut cfg.mix.priority, "優先頻道（有人說話時壓低其他頻道）");
                 });
+                if cfg.talk != before.talk {
+                    if cfg.talk == TalkMode::Ptt {
+                        // 改成按鍵說話：套用存好的鍵；還沒設定就直接開始錄製
+                        cfg.ptt_key = self.settings.ptt_key(&ch.name);
+                        if cfg.ptt_key.is_none() {
+                            record = Some(KeyTarget::Channel(ch.id, ch.name.clone()));
+                        }
+                    } else if before.talk == TalkMode::Ptt {
+                        // 不再用按鍵說話：下次加入時也不套用
+                        self.settings.ptt_keys.remove(&ch.name);
+                    }
+                }
+                if cfg.talk == TalkMode::Ptt && cfg.ptt_key.is_none() {
+                    ui.colored_label(AMBER, "還沒設定按鍵，這個頻道不會送出聲音");
+                }
                 if cfg != before {
                     // 不收聽也不說話等同離開，set_channel 會處理
                     let _ = s.set_channel(ch.id, Some(cfg));
@@ -410,6 +519,9 @@ impl App {
                 });
             }
         });
+        if let Some(t) = record {
+            self.start_recording(t);
+        }
     }
 
     fn controls(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
@@ -475,6 +587,7 @@ impl eframe::App for App {
         }
 
         let snap = self.session.as_ref().map(|s| s.snapshot());
+        self.poll_recording(snap.as_ref());
         if let Some(snap) = &snap {
             egui::Panel::bottom("controls").show(ui, |ui| self.controls(ui, snap));
         }
@@ -494,7 +607,9 @@ impl eframe::App for App {
             });
         });
 
-        if self.session.is_some() || self.pending.is_some() {
+        if self.recording.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(30));
+        } else if self.session.is_some() || self.pending.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(80));
         }
     }
@@ -514,10 +629,38 @@ impl Drop for App {
     }
 }
 
+/// 加入某頻道時的設定：有存 PTT 鍵就用按鍵說話，否則用預設
+fn join_cfg(settings: &Settings, s: &Session, name: &str) -> ChannelCfg {
+    let mut cfg = s.default_channel_cfg();
+    if let Some(k) = settings.ptt_key(name) {
+        cfg.talk = TalkMode::Ptt;
+        cfg.ptt_key = Some(k);
+    }
+    cfg
+}
+
+/// 設定按鍵的按鈕：顯示目前的鍵；錄製中顯示提示。回傳 true = 要開始錄製
+fn key_button(ui: &mut egui::Ui, recording: &Option<KeyTarget>, target: &KeyTarget, current: Option<&str>) -> bool {
+    let active = recording.as_ref() == Some(target);
+    let text = if active {
+        RichText::new("請按鍵…（Esc 取消）").color(AMBER)
+    } else {
+        match current {
+            Some(k) => RichText::new(k).strong(),
+            None => RichText::new("設定按鍵"),
+        }
+    };
+    let r = ui
+        .add(egui::Button::new(text).small())
+        .on_hover_text("按下要用的鍵（可搭配 Ctrl／Alt／Shift，也可以用滑鼠中鍵或側鍵）");
+    r.clicked() && !active
+}
+
 fn talk_label(m: TalkMode) -> &'static str {
     match m {
         TalkMode::Off => "不說話",
         TalkMode::Voice => "偵測說話",
         TalkMode::Open => "一直開麥",
+        TalkMode::Ptt => "按鍵說話",
     }
 }

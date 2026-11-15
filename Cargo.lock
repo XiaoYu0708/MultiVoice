@@ -4175,6 +4175,7 @@ dependencies = [
  "audio",
  "client-core",
  "host-core",
+ "hotkeys",
  "iroh",
  "mixer-core",
  "protocol",

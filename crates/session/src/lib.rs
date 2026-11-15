@@ -9,6 +9,7 @@
 
 pub mod identity;
 pub mod pipeline;
+pub mod talk;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering;
@@ -24,6 +25,7 @@ use protocol::{ChannelId, DEFAULT_CHANNEL, SessionIdx};
 use tokio::sync::mpsc::UnboundedReceiver;
 use transport::RelaySetup;
 
+pub use hotkeys::{self, Hotkey};
 pub use mixer_core::route::ChannelMix;
 pub use pipeline::{AudioOpts, ChannelCfg, JitterSummary, Shared, TalkMode};
 pub use transport::RelaySetup as Relays;
@@ -167,6 +169,8 @@ pub struct Session {
 impl Session {
     /// 啟動音訊、自動加入大廳，並在 `rt` 上開 task 處理控制事件
     pub fn start(c: Connected, audio: &AudioOpts, rt: &tokio::runtime::Handle) -> Result<Session> {
+        // 全域按鍵（PTT／廣播／靜音）；失敗不影響其他功能
+        let hotkey_err = hotkeys::start().err();
         let shared = Arc::new(Shared::new());
         let handle = match pipeline::start(c.client.clone(), shared.clone(), audio) {
             Ok(h) => h,
@@ -189,6 +193,9 @@ impl Session {
             r.names = c.client.members().into_iter().map(|m| (m.session_idx, m.display_name)).collect();
             r.channel_names = c.client.channels().into_iter().map(|ch| (ch.id, ch.name)).collect();
             r.push_log(if c.host.is_some() { "已建立房間".into() } else { "已加入房間".into() });
+            if let Some(e) = hotkey_err {
+                r.push_log(format!("全域按鍵無法使用：{e}"));
+            }
         }
         let mut events = c.events;
         let (room2, shared2, client2) = (room.clone(), shared.clone(), c.client.clone());
@@ -253,6 +260,7 @@ impl Session {
             listen: true,
             talk: if self.opts.open_mic { TalkMode::Open } else { TalkMode::Voice },
             mix: ChannelMix::default(),
+            ptt_key: None,
         }
     }
 
@@ -385,9 +393,8 @@ impl Session {
                 Ok(())
             }
             Err(e) => {
-                let mut old = self.opts.clone();
                 // 保留新的即時設定，只退回裝置
-                (old.open_mic, old.denoise, old.mix, old.volume) = (new.open_mic, new.denoise, new.mix, new.volume);
+                let old = AudioOpts { input: self.opts.input.clone(), output: self.opts.output.clone(), ..new.clone() };
                 if let Ok(h) = pipeline::start(self.client.clone(), self.shared.clone(), &old) {
                     self.audio = Some(h);
                     self.opts = old;

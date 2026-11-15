@@ -189,7 +189,7 @@ fn print_status(s: &Snapshot) {
 
 /// 自動測試用：建立頻道並在裡面一直開麥，大廳改為只聽
 async fn setup_channels(s: &Session, names: &[String]) -> Result<()> {
-    let open = ChannelCfg { listen: true, talk: TalkMode::Open, mix: ChannelMix::default() };
+    let open = ChannelCfg { listen: true, talk: TalkMode::Open, mix: ChannelMix::default(), ptt_key: None };
     s.set_channel(0, Some(ChannelCfg { talk: TalkMode::Off, ..open }))?;
     for name in names {
         s.create_channel(name);

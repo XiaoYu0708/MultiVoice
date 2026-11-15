@@ -15,6 +15,7 @@ mixer-core = { version = "0.1.0", path = "../mixer-core" }
 protocol = { version = "0.1.0", path = "../protocol" }
 rtrb = "0.4"
 tokio = { version = "1", features = ["full"] }
+hotkeys = { version = "0.1.0", path = "../hotkeys" }
 tracing = "0.1"
 transport = { version = "0.1.0", path = "../transport" }
 

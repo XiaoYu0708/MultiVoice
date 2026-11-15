@@ -27,8 +27,8 @@ fn main() -> anyhow::Result<()> {
     wait(&b, &|s| s.channels.iter().any(|c| c.name == "指揮部"), "B 看到指揮部");
     let cmd = b.snapshot().channels.iter().find(|c| c.name == "指揮部").unwrap().id;
 
-    let listen_only = ChannelCfg { listen: true, talk: TalkMode::Off, mix: ChannelMix::default() };
-    let open = ChannelCfg { listen: true, talk: TalkMode::Open, mix: ChannelMix::default() };
+    let listen_only = ChannelCfg { listen: true, talk: TalkMode::Off, mix: ChannelMix::default(), ptt_key: None };
+    let open = ChannelCfg { listen: true, talk: TalkMode::Open, mix: ChannelMix::default(), ptt_key: None };
     a.set_channel(0, Some(listen_only))?; // A 在大廳只聽不說
     a.set_channel(cmd, Some(open))?; // A 在指揮部常開
     b.set_channel(0, None)?; // B 離開大廳

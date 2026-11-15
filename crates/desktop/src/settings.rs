@@ -1,5 +1,6 @@
 //! 使用者設定：`%APPDATA%\MultiVoice\settings.toml`，修改後自動儲存。
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,15 @@ pub struct Settings {
     pub output_volume: f32,
     /// 最近一次使用的邀請票（方便重新加入）
     pub last_ticket: String,
+    /// 按鍵說話：頻道名稱 → 按鍵（頻道 ID 每次建房都不同，所以用名稱）。
+    /// 有設定的頻道，加入時自動用「按鍵說話」
+    pub ptt_keys: BTreeMap<String, String>,
+    /// 全域廣播鍵（按住對所有會說話的頻道說話）
+    pub broadcast_key: Option<String>,
+    /// 全域靜音鍵（按一下切換）
+    pub mute_key: Option<String>,
+    /// 開／關麥提示音
+    pub cues: bool,
 }
 
 impl Default for Settings {
@@ -33,6 +43,10 @@ impl Default for Settings {
             speech_mix: 0.3,
             output_volume: 1.0,
             last_ticket: String::new(),
+            ptt_keys: BTreeMap::new(),
+            broadcast_key: None,
+            mute_key: None,
+            cues: true,
         }
     }
 }
@@ -69,7 +83,19 @@ impl Settings {
             denoise: self.denoise,
             mix: self.speech_mix,
             volume: self.output_volume,
+            broadcast_key: parse_key(&self.broadcast_key),
+            mute_key: parse_key(&self.mute_key),
+            cues: self.cues,
             ..Default::default()
         }
     }
+
+    /// 某頻道設定的 PTT 鍵
+    pub fn ptt_key(&self, channel: &str) -> Option<session::Hotkey> {
+        self.ptt_keys.get(channel).and_then(|k| k.parse().ok())
+    }
+}
+
+fn parse_key(k: &Option<String>) -> Option<session::Hotkey> {
+    k.as_deref().and_then(|k| k.parse().ok())
 }

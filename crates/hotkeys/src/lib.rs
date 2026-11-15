@@ -10,14 +10,17 @@ mod hook;
 
 pub use keys::{Hotkey, Trigger, key_name, parse_key};
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// 0..=255：虛擬鍵碼；256..：滑鼠按鍵
 const SLOTS: usize = 5;
 static DOWN: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 /// hook 收到的事件總數（UI 用來判斷「遊戲在前景時是否還收得到按鍵」）
 static EVENTS: AtomicU64 = AtomicU64::new(0);
+
+/// 切換型按鍵（例如全域靜音）的按下次數；hook 執行緒在「按下」的瞬間判斷，短按也不會漏
+static WATCHES: Mutex<Vec<(Hotkey, Arc<AtomicU32>)>> = Mutex::new(Vec::new());
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static RECORDED: Mutex<Option<Recorded>> = Mutex::new(None);
@@ -73,6 +76,15 @@ pub fn event_count() -> u64 {
     EVENTS.load(Ordering::Relaxed)
 }
 
+/// 開始計算某個快捷鍵被按下的次數（不含自動重複）。丟掉回傳的計數器就停止計算。
+pub fn watch_presses(hk: Hotkey) -> Arc<AtomicU32> {
+    let c = Arc::new(AtomicU32::new(0));
+    let mut w = WATCHES.lock().unwrap();
+    w.retain(|(_, c)| Arc::strong_count(c) > 1);
+    w.push((hk, c.clone()));
+    c
+}
+
 /// 進入錄製模式：下一個按下的鍵（可帶修飾鍵；單按修飾鍵後放開也算；Esc 取消）
 /// 由 [`take_recorded`] 取回
 pub fn start_recording() {
@@ -96,8 +108,17 @@ pub fn take_recorded() -> Option<Recorded> {
 /// hook 收到一個按下／放開事件（hook 執行緒呼叫；測試也直接呼叫）
 pub(crate) fn on_input(t: Trigger, down: bool) {
     EVENTS.fetch_add(1, Ordering::Relaxed);
-    // 自動重複的 keydown 不影響狀態
+    let pressed = down && !raw_down(t); // 自動重複的 keydown 不算新的按下
     set_down(t, down);
+    if pressed {
+        let mut w = WATCHES.lock().unwrap();
+        w.retain(|(_, c)| Arc::strong_count(c) > 1);
+        for (hk, c) in w.iter() {
+            if keys::variants(hk.trigger).contains(&t) && hk.held() {
+                c.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
     if RECORDING.load(Ordering::SeqCst) {
         if let Some(r) = keys::record_step(t, down) {
             RECORDING.store(false, Ordering::SeqCst);
@@ -168,6 +189,24 @@ mod tests {
         assert!(m.held());
         on_input(Trigger::MouseX1, false);
         assert!(!m.held());
+    }
+
+    #[test]
+    fn press_counter() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let c = watch_presses("Alt+F8".parse().unwrap());
+        on_input(Trigger::Key(0x77), true);
+        on_input(Trigger::Key(0x77), false);
+        assert_eq!(c.load(Ordering::Relaxed), 0, "沒按 Alt");
+        on_input(Trigger::Key(VK_LMENU), true);
+        on_input(Trigger::Key(0x77), true);
+        on_input(Trigger::Key(0x77), true); // 自動重複
+        on_input(Trigger::Key(0x77), false);
+        on_input(Trigger::Key(0x77), true);
+        on_input(Trigger::Key(0x77), false);
+        on_input(Trigger::Key(VK_LMENU), false);
+        assert_eq!(c.load(Ordering::Relaxed), 2);
+        drop(c);
     }
 
     #[test]

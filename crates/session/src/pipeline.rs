@@ -1,9 +1,9 @@
 //! 音訊管線：
 //!
 //! ```text
-//! 麥克風 → [擷取執行緒] 降噪 → VAD → 依各頻道說話模式算出 talk_mask → Opus 編碼 → client.send_voice
+//! 麥克風 → [擷取執行緒] 降噪 → VAD ＋ 按鍵（PTT／廣播／靜音）→ 依各頻道說話模式算出 talk_mask → Opus 編碼 → client.send_voice
 //! client.recv_voice → [tokio task] 每位說話者的 jitter buffer（記下 via_mask）
-//! [播放執行緒] 各 jitter buffer → 各自的 Opus 解碼器 → 依頻道混音規則（音量、定位、優先 ducking）→ 立體聲 → 耳機
+//! [播放執行緒] 各 jitter buffer → 各自的 Opus 解碼器 → 依頻道混音規則（音量、定位、優先 ducking）→ 立體聲 ＋ 提示音 → 耳機
 //! ```
 //!
 //! 進房後可調整：
@@ -30,6 +30,10 @@ use mixer_core::route::{ChannelMix, DUCK_GAIN, Route, route};
 use protocol::voice::Kind;
 use protocol::{ChannelId, SessionIdx};
 
+use hotkeys::Hotkey;
+
+use crate::talk::{Cue, TalkInputs, TalkState, TonePlayer};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioOpts {
     pub input: Option<String>,
@@ -41,6 +45,12 @@ pub struct AudioOpts {
     pub bitrate: i32,
     pub buffer_ms: u32,
     pub volume: f32,
+    /// 全域廣播鍵：按住時對所有會說話的頻道說話
+    pub broadcast_key: Option<Hotkey>,
+    /// 全域靜音鍵：按一下切換靜音
+    pub mute_key: Option<Hotkey>,
+    /// 開／關麥提示音
+    pub cues: bool,
 }
 
 impl Default for AudioOpts {
@@ -54,6 +64,9 @@ impl Default for AudioOpts {
             bitrate: 32_000,
             buffer_ms: 30,
             volume: 1.0,
+            broadcast_key: None,
+            mute_key: None,
+            cues: true,
         }
     }
 }
@@ -67,6 +80,8 @@ pub enum TalkMode {
     Voice,
     /// 一直開麥
     Open,
+    /// 按住 [`ChannelCfg::ptt_key`] 才說話（不經過 VAD）
+    Ptt,
 }
 
 /// 我在某個已加入頻道的設定
@@ -75,14 +90,14 @@ pub struct ChannelCfg {
     pub listen: bool,
     pub talk: TalkMode,
     pub mix: ChannelMix,
+    /// 說話模式為 [`TalkMode::Ptt`] 時用的按鍵；沒設定就不會說話
+    pub ptt_key: Option<Hotkey>,
 }
 
 /// VAD：RNNoise 人聲機率 + 降噪後音量（PLAN.md：人聲機率不能單獨使用）
 const VAD_PROB: f32 = 0.6;
 const VAD_MIN_DBFS: f32 = -50.0;
-/// 講完後繼續送出的時間
-const HANGOVER_FRAMES: u32 = 15; // 300 ms
-const SLOTS: usize = protocol::control::MAX_SLOTS as usize;
+pub(crate) const SLOTS: usize = protocol::control::MAX_SLOTS as usize;
 
 fn load_f32(a: &AtomicU32) -> f32 {
     f32::from_bits(a.load(Ordering::Relaxed))
@@ -116,6 +131,16 @@ pub struct Shared {
     /// 說話模式為「偵測說話」／「常開」的頻道（我的槽位）
     vad_mask: AtomicU64,
     open_mask: AtomicU64,
+    /// 所有 talk != Off 的頻道（全域廣播鍵用）
+    all_mask: AtomicU64,
+    /// PTT 鍵 → 對應的頻道遮罩
+    ptt_keys: Mutex<Vec<(Hotkey, u64)>>,
+    broadcast_key: Mutex<Option<Hotkey>>,
+    /// 全域靜音鍵與它的按下次數（擷取執行緒每幀取走）
+    mute_watch: Mutex<Option<(Hotkey, Arc<AtomicU32>)>>,
+    cues: AtomicBool,
+    /// 待播的提示音（播放執行緒取走；新的蓋掉舊的）
+    cue: Mutex<Option<Cue>>,
     /// 目前實際送出的 talk_mask
     tx_mask: AtomicU64,
     /// 下一個語音封包的序號（重啟音訊後接續）
@@ -155,6 +180,12 @@ impl Shared {
             slots: Mutex::new([SlotInfo::default(); SLOTS]),
             vad_mask: AtomicU64::new(0),
             open_mask: AtomicU64::new(0),
+            all_mask: AtomicU64::new(0),
+            ptt_keys: Mutex::new(Vec::new()),
+            broadcast_key: Mutex::new(None),
+            mute_watch: Mutex::new(None),
+            cues: AtomicBool::new(true),
+            cue: Mutex::new(None),
             tx_mask: AtomicU64::new(0),
             seq: AtomicU32::new(0),
             mic_peak: AtomicU32::new(0),
@@ -172,6 +203,18 @@ impl Shared {
         self.denoise.store(o.denoise, Ordering::Relaxed);
         store_f32(&self.speech_mix, o.mix);
         store_f32(&self.volume, o.volume);
+        self.cues.store(o.cues, Ordering::Relaxed);
+        *self.broadcast_key.lock().unwrap() = o.broadcast_key;
+        let mut mw = self.mute_watch.lock().unwrap();
+        if mw.as_ref().map(|(k, _)| *k) != o.mute_key {
+            *mw = o.mute_key.map(|k| (k, hotkeys::watch_presses(k)));
+        }
+    }
+
+    fn cue(&self, c: Cue) {
+        if self.cues.load(Ordering::Relaxed) {
+            *self.cue.lock().unwrap() = Some(c);
+        }
     }
 
     pub fn channel_cfgs(&self) -> BTreeMap<ChannelId, ChannelCfg> {
@@ -191,19 +234,31 @@ impl Shared {
     pub fn rebuild(&self, my_slots: &HashMap<ChannelId, u8>) {
         let cfgs = self.cfgs.lock().unwrap();
         let mut slots = [SlotInfo::default(); SLOTS];
-        let (mut vad, mut open) = (0u64, 0u64);
+        let (mut vad, mut open, mut all) = (0u64, 0u64, 0u64);
+        let mut ptt: Vec<(Hotkey, u64)> = Vec::new();
         for (&ch, &slot) in my_slots {
             let Some(cfg) = cfgs.get(&ch) else { continue };
             slots[slot as usize] = SlotInfo { channel: Some(ch), mix: Some(cfg.mix) };
+            let bit = 1u64 << slot;
             match cfg.talk {
-                TalkMode::Voice => vad |= 1 << slot,
-                TalkMode::Open => open |= 1 << slot,
-                TalkMode::Off => {}
+                TalkMode::Voice => vad |= bit,
+                TalkMode::Open => open |= bit,
+                TalkMode::Ptt => match cfg.ptt_key {
+                    Some(k) => match ptt.iter_mut().find(|(kk, _)| *kk == k) {
+                        Some((_, m)) => *m |= bit,
+                        None => ptt.push((k, bit)),
+                    },
+                    None => {}
+                },
+                TalkMode::Off => continue,
             }
+            all |= bit;
         }
         *self.slots.lock().unwrap() = slots;
+        *self.ptt_keys.lock().unwrap() = ptt;
         self.vad_mask.store(vad, Ordering::Relaxed);
         self.open_mask.store(open, Ordering::Relaxed);
+        self.all_mask.store(all, Ordering::Relaxed);
     }
 
     /// 遮罩（我的槽位）→ 頻道
@@ -339,8 +394,11 @@ fn spawn_capture(
         let mut frame = Vec::with_capacity(FRAME_SAMPLES);
         let mut pkt = [0u8; MAX_PACKET];
         let mut prev: Option<Vec<u8>> = None; // 前一幀（開口時補送，避免切掉字頭）
-        let mut hang = 0u32;
+        let mut talk = TalkState::default();
         let mut active = false;
+        // 提示音用：上一幀按住的 PTT 頻道／廣播鍵、靜音狀態
+        let (mut prev_ptt, mut prev_bc) = (0u64, false);
+        let mut prev_muted = shared.muted.load(Ordering::Relaxed);
         let running = || !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed);
         while running() {
             while let Ok(s) = ring.pop() {
@@ -370,15 +428,42 @@ fn spawn_capture(
                 };
                 frame.clear();
 
-                let voiced = vad >= VAD_PROB && db >= VAD_MIN_DBFS;
-                hang = if voiced { HANGOVER_FRAMES } else { hang.saturating_sub(1) };
-                let mut mask = shared.open_mask.load(Ordering::Relaxed);
-                if hang > 0 {
-                    mask |= shared.vad_mask.load(Ordering::Relaxed);
+                // 全域靜音鍵：每按一次切換
+                if let Some((_, c)) = shared.mute_watch.lock().unwrap().as_ref() {
+                    if c.swap(0, Ordering::Relaxed) % 2 == 1 {
+                        shared.muted.fetch_xor(true, Ordering::Relaxed);
+                    }
                 }
-                if shared.muted.load(Ordering::Relaxed) {
-                    mask = 0;
+                let muted = shared.muted.load(Ordering::Relaxed);
+                let ptt_held = shared
+                    .ptt_keys
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(k, _)| k.held())
+                    .fold(0u64, |m, (_, b)| m | b);
+                let broadcast = shared.broadcast_key.lock().unwrap().is_some_and(|k| k.held());
+                let mask = talk.step(&TalkInputs {
+                    open: shared.open_mask.load(Ordering::Relaxed),
+                    vad: shared.vad_mask.load(Ordering::Relaxed),
+                    all: shared.all_mask.load(Ordering::Relaxed),
+                    voiced: vad >= VAD_PROB && db >= VAD_MIN_DBFS,
+                    ptt_held,
+                    broadcast,
+                    muted,
+                });
+
+                // 提示音：靜音切換；沒靜音時 PTT／廣播鍵按下與放開
+                if muted != prev_muted {
+                    shared.cue(if muted { Cue::Muted } else { Cue::Unmuted });
+                } else if !muted && broadcast != prev_bc {
+                    shared.cue(if broadcast { Cue::BroadcastOn } else { Cue::BroadcastOff });
+                } else if !muted && !broadcast && (ptt_held == 0) != (prev_ptt == 0) {
+                    let slot = |m: u64| m.trailing_zeros() as u8;
+                    shared.cue(if ptt_held != 0 { Cue::PttOn(slot(ptt_held)) } else { Cue::PttOff(slot(prev_ptt)) });
                 }
+                (prev_ptt, prev_bc, prev_muted) = (ptt_held, broadcast, muted);
+
                 let want = mask != 0;
 
                 if want {
@@ -442,6 +527,7 @@ fn spawn_playback(
         let mut voices: HashMap<SessionIdx, Vec<f32>> = HashMap::new();
         let mut routed: Vec<(SessionIdx, Route)> = Vec::new();
         let mut mix = vec![0f32; FRAME_SAMPLES * 2];
+        let mut tones = TonePlayer::default();
         let mut warmed = false;
         while !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
             if (cap * 2 - out.slots()) / 2 >= target {
@@ -498,15 +584,18 @@ fn spawn_playback(
                 let g = if ducking && !r.priority { r.gain * DUCK_GAIN } else { r.gain };
                 mix_into_stereo(&mut mix, &voices[idx], g, r.pan);
             }
+            let vol = load_f32(&shared.volume);
             if shared.deafened.load(Ordering::Relaxed) {
                 mix.fill(0.0);
-            } else {
-                let vol = load_f32(&shared.volume);
-                if vol != 1.0 {
-                    mix.iter_mut().for_each(|s| *s *= vol);
-                }
-                soft_clip(&mut mix);
+            } else if vol != 1.0 {
+                mix.iter_mut().for_each(|s| *s *= vol);
             }
+            // 提示音：拒聽時也播（自己的狀態提示），跟著輸出音量
+            if let Some(c) = shared.cue.lock().unwrap().take() {
+                tones.play(c);
+            }
+            tones.mix_into(&mut mix, vol);
+            soft_clip(&mut mix);
             for &s in &mix {
                 let _ = out.push(s);
             }
