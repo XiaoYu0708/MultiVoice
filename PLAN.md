@@ -446,6 +446,12 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
     - 沒有出現限流警告；中位數比最小值高約 90 ms 且起伏大，推測是 relay 路徑（TCP/WebSocket）上的排隊
     - **結論：公共 relay 對台灣玩家太遠，自架 relay（§7.3）是必要的，不只是備案**
   - [ ] 尚未完成：兩台不同網路的電腦互測（驗證打洞成功率與真實 RTT）
+- [x] 這台電腦：Caddy + 自架 iroh-relay（2026-11-15，`deploy/`）
+  - Caddy 自動申請 `voice.` / `relay.` 的 Let's Encrypt 憑證成功；iroh-relay 以 `Reloading` 模式直接讀 Caddy 的憑證檔，Caddy 以 HTTPS 反向代理到 relay 的 8443；QAD 走 UDP 7842 直接對外
+  - 路由器轉發 TCP 80/443、UDP 7842 → 這台電腦；Windows 防火牆已有 Docker Desktop Backend 放行規則（公用網路），不需另外設定
+  - 經公開 IP 的 HTTPS 驗證成功（路由器支援 NAT loopback）
+  - `netprobe local --relay-only --relay https://relay.xiaoyu0708.ip-ddns.com/`：RTT 中位數 **3.4 ms**、p95 5.2 ms、抖動 0.8 ms、0% 掉包；上線 0.4 秒、連線建立 6 ms（公共 relay 為 238 ms / 410 ms / 28 ms）。封包未離開本地網路，外部玩家的真實延遲待第二台裝置實測
+  - iroh 的 `RelayConfig` 支援 `auth_token`，可配合 relay 的 `access.shared_token` 限制只有 MultiVoice 客戶端能使用（M6）
 - [ ] iroh WASM 在 Chrome Android / iOS Safari 能否連上（只驗證連線）
 - [ ] 這台電腦：Cloudflare 新增 `voice.` / `relay.` 灰雲 A 紀錄 → Docker 起 `caddy` + `iroh-relay`，確認 HTTPS 憑證自動申請成功、瀏覽器能經 WSS 連上 relay
 - [ ] Docker Desktop 內 UDP 的直連效果（決定 `headless-host` 放 Docker 還是 Windows 原生）

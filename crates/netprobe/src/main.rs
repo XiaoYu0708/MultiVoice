@@ -8,13 +8,14 @@
 //!   netprobe local   [--relay-only] [--seconds N]     同一行程內兩端互測
 //!
 //! `--relay-only`：關閉直連（IP transport），強制所有封包經 relay。
+//! `--relay <URL>`：只用指定的 relay（例如自架的 https://relay.xiaoyu0708.ip-ddns.com/），不用 n0 公共 relay。
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, presets};
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl};
 
 const ALPN: &[u8] = b"multivoice/netprobe/0";
 const PACKET_SIZE: usize = 100; // ≈ 32 kbps Opus 20 ms 封包 + 我們的標頭
@@ -24,16 +25,18 @@ struct Opts {
     mode: String,
     peer: Option<String>,
     relay_only: bool,
+    relay: Option<RelayUrl>,
     seconds: u64,
 }
 
 fn parse_args() -> Result<Opts> {
     let mut args = std::env::args().skip(1);
     let mode = args.next().context("用法：netprobe listen|connect <id>|local [--relay-only] [--seconds N]")?;
-    let mut o = Opts { mode, peer: None, relay_only: false, seconds: 30 };
+    let mut o = Opts { mode, peer: None, relay_only: false, relay: None, seconds: 30 };
     while let Some(a) = args.next() {
         match a.as_str() {
             "--relay-only" => o.relay_only = true,
+            "--relay" => o.relay = Some(args.next().context("--relay 需要 URL")?.parse()?),
             "--seconds" => o.seconds = args.next().context("--seconds 需要值")?.parse()?,
             _ if o.peer.is_none() && !a.starts_with("--") => o.peer = Some(a),
             other => bail!("未知選項 {other}"),
@@ -42,12 +45,15 @@ fn parse_args() -> Result<Opts> {
     Ok(o)
 }
 
-async fn bind(relay_only: bool, accept: bool) -> Result<Endpoint> {
+async fn bind(o: &Opts, accept: bool) -> Result<Endpoint> {
     let mut b = Endpoint::builder(presets::N0);
+    if let Some(url) = &o.relay {
+        b = b.relay_mode(RelayMode::Custom(RelayMap::from(url.clone())));
+    }
     if accept {
         b = b.alpns(vec![ALPN.to_vec()]);
     }
-    if relay_only {
+    if o.relay_only {
         b = b.clear_ip_transports();
     }
     let ep = b.bind().await?;
@@ -240,23 +246,28 @@ async fn main() -> Result<()> {
     let o = parse_args()?;
     match o.mode.as_str() {
         "listen" => {
-            let ep = bind(o.relay_only, true).await?;
+            let ep = bind(&o, true).await?;
             print_addr(&ep);
-            println!("\n在另一台電腦執行：netprobe connect {}{}", ep.id(), if o.relay_only { " --relay-only" } else { "" });
+            println!(
+                "\n在另一台電腦執行：netprobe connect {}{}{}",
+                ep.id(),
+                if o.relay_only { " --relay-only" } else { "" },
+                o.relay.as_ref().map(|u| format!(" --relay {u}")).unwrap_or_default()
+            );
             println!("等待連線中（Ctrl+C 結束）…");
             serve(ep).await?;
         }
         "connect" => {
             let id: EndpointId = o.peer.as_deref().context("請提供對方的 EndpointId")?.parse()?;
-            let ep = bind(o.relay_only, false).await?;
+            let ep = bind(&o, false).await?;
             // 只給公鑰：位址由 iroh 的位址查詢（DNS / pkarr）解析
             probe(&ep, EndpointAddr::from(id), o.seconds).await?;
             ep.close().await;
         }
         "local" => {
-            let server = bind(o.relay_only, true).await?;
+            let server = bind(&o, true).await?;
             let addr = server.addr();
-            let client = bind(o.relay_only, false).await?;
+            let client = bind(&o, false).await?;
             tokio::spawn(serve(server.clone()));
             println!("本機互測{}\n", if o.relay_only { "（強制 relay）" } else { "" });
             probe(&client, addr, o.seconds).await?;
