@@ -14,6 +14,8 @@ const join64 = (lo, hi) => (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
 // ---------------------------------------------------------------- state
 let room = null;
 let ctx = null, node = null, micStream = null, micSource = null, wakeLock = null;
+/** iPhone background mode 2: the engine output goes through an <audio> element (media playback) */
+let mediaOut = null;
 let state = null;              // last Room.state() JSON
 let audioStatus = null;        // last status from the worklet
 let muted = false, deafened = false;
@@ -23,6 +25,8 @@ const settings = {
   gate: store.get('gate', -50),
   cues: store.get('cues', true),
   wakelock: store.get('wakelock', true),
+  // iPhone in the background: 0 = off, 1 = keep playing via Web Audio, 2 = play through a media element
+  bgListen: store.get('bgListen', 1),
 };
 /** channel id -> { mode, listen, volume } for channels I joined */
 const joined = new Map();
@@ -75,13 +79,15 @@ function showJoinError(msg) {
 }
 
 // ---------------------------------------------------------------- audio
-const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// ?ios in the URL: test the iPhone code paths on another browser
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  || new URLSearchParams(location.search).has('ios');
 /** the user granted the mic once: try to bring it back automatically after the OS paused it */
 let micWanted = false;
 
 async function startAudio() {
   // Safari 16.4+: tell iOS this is a call (mic + playback together)
-  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}
+  setAudioSession('play-and-record');
   ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
   await ctx.resume();
   // iOS puts the context into 'interrupted'/'suspended' in the background or during a phone call
@@ -97,7 +103,19 @@ async function startAudio() {
   node = new AudioWorkletNode(ctx, 'mv-engine', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
   node.port.onmessage = (e) => onWorklet(e.data);
   node.port.postMessage({ t: 'wasm', bytes }, [bytes]);
-  node.connect(ctx.destination);
+  if (IOS && settings.bgListen === 2) {
+    // play through a media element: iOS lets media keep playing in the background
+    const dest = ctx.createMediaStreamDestination();
+    node.connect(dest);
+    mediaOut = new Audio();
+    mediaOut.srcObject = dest.stream;
+    mediaOut.play().catch(() => {});
+  } else {
+    node.connect(ctx.destination);
+  }
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.metadata = new MediaMetadata({ title: 'MultiVoice', artist: '語音房間' }); } catch {}
+  }
   sentSlots = new Map();
   pushSettings();
   await enableMic();
@@ -145,6 +163,7 @@ function stopAudio() {
   micStream?.getTracks().forEach((t) => t.stop());
   micStream = null;
   micWanted = false;
+  if (mediaOut) { mediaOut.pause(); mediaOut.srcObject = null; mediaOut = null; }
   try { node?.disconnect(); } catch {}
   node = null;
   ctx?.close().catch(() => {});
@@ -482,6 +501,8 @@ bindSetting('volume', 'volume', (v) => Math.round(v * 100) + '%', pushSettings);
 bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudio(); });
 bindSetting('cues', 'cues', null, pushSettings);
 bindSetting('wakelock', 'wakelock', null, (on) => setWakeLock(on && !!room));
+bindSetting('bgListen', 'bgListen', null, null);
+$('#bg-listen-row').hidden = !IOS;
 renderToggles();
 
 async function setWakeLock(on) {
@@ -498,7 +519,9 @@ async function setWakeLock(on) {
 /** Back in the foreground: resume audio, and re-open the mic if the OS stopped or paused it */
 async function recoverAudio() {
   if (!room || !ctx) return;
+  setAudioSession('play-and-record');
   try { await ctx.resume(); } catch {}
+  mediaOut?.play().catch(() => {});
   const t = micStream?.getAudioTracks()[0];
   if (micWanted && (!t || t.readyState === 'ended' || t.muted)) {
     // give iOS a moment to un-pause the track by itself
@@ -508,7 +531,30 @@ async function recoverAudio() {
   }
   renderAudio();
 }
+function setAudioSession(type) {
+  try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {}
+}
+
+/**
+ * iPhone going to the background: Safari will not record from a background page, and while the page holds the mic
+ * it pauses all audio. Release the mic and switch to "playback" so others can still be heard (experimental;
+ * the mic comes back automatically in recoverAudio()).
+ */
+function enterBackground() {
+  if (!IOS || !room || !ctx || settings.bgListen === 0) return;
+  if (micStream) {
+    micStream.getTracks().forEach((t) => t.stop());
+    try { micSource?.disconnect(); } catch {}
+    micStream = null;
+    micSource = null;
+  }
+  setAudioSession('playback');
+  ctx.resume().catch(() => {});
+  mediaOut?.play().catch(() => {});
+}
+
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') enterBackground();
   if (document.visibilityState === 'visible') {
     setWakeLock(settings.wakelock);
     recoverAudio();
