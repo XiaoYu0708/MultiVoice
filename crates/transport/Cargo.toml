@@ -9,6 +9,6 @@ publish.workspace = true
 anyhow = "1"
 getrandom = "0.4"
 iroh = "1"
-protocol = { version = "0.1.0", path = "../protocol" }
+protocol = { path = "../protocol" }
 serde = "1"
 tokio = { version = "1", features = ["full"] }

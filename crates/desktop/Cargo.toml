@@ -11,11 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-audio = { version = "0.1.0", path = "../audio" }
+audio = { path = "../audio" }
 eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow"] }
-protocol = { version = "0.1.0", path = "../protocol" }
+protocol = { path = "../protocol" }
 serde = { version = "1", features = ["derive"] }
-session = { version = "0.1.0", path = "../session" }
+session = { path = "../session" }
 tokio = { version = "1", features = ["full"] }
 toml = "1"
 ureq = { version = "3", features = ["json"] }

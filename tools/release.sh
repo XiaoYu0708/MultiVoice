@@ -22,7 +22,11 @@ if git rev-parse -q --verify "refs/tags/v$VER" >/dev/null; then
   exit 1
 fi
 
-# workspace 版本（所有 crate 共用）
+# 在 commit 之前失敗（測試沒過、建置失敗…）就把版本號改回來，不留下改到一半的檔案
+restore() { git checkout -- Cargo.toml Cargo.lock 2>/dev/null || true; echo "發佈中止，已還原 Cargo.toml / Cargo.lock" >&2; }
+trap restore ERR
+
+# workspace 版本（所有 crate 共用；crate 之間的 path 相依不寫版本號，所以只要改這裡）
 sed -i "s/^version = \".*\"/version = \"$VER\"/" Cargo.toml
 
 # 正在執行的 multivoice.exe 會鎖住檔案
@@ -38,6 +42,7 @@ cp "$TARGET/release/multivoice.exe" "$TARGET/release/multivoice-cli.exe" dist/
 
 git add Cargo.toml Cargo.lock
 git diff --cached --quiet || git commit -m "發佈 v$VER"
+trap - ERR
 git tag -a "v$VER" -m "v$VER"
 git push origin HEAD --follow-tags
 

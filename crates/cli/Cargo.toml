@@ -11,6 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-session = { version = "0.1.0", path = "../session" }
+session = { path = "../session" }
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

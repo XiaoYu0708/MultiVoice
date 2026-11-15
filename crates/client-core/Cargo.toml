@@ -9,10 +9,10 @@ publish.workspace = true
 anyhow = "1"
 bytes = "1"
 iroh = "1"
-protocol = { version = "0.1.0", path = "../protocol" }
+protocol = { path = "../protocol" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-transport = { version = "0.1.0", path = "../transport" }
+transport = { path = "../transport" }
 
 [dev-dependencies]
 host-core = { path = "../host-core" }
