@@ -105,7 +105,8 @@ fn main() -> Result<(), device::Error> {
     // 環形緩衝：輸入 200 ms、輸出 200 ms 容量
     let cap = SAMPLE_RATE as usize / 5;
     let (in_prod, mut in_cons) = rtrb::RingBuffer::<f32>::new(cap);
-    let (mut out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(cap);
+    // 輸出為左右交錯的立體聲，容量加倍
+    let (mut out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(cap * 2);
     let (in_onset_tx, mut in_onset_rx) = rtrb::RingBuffer::<u64>::new(64);
     let (out_onset_tx, mut out_onset_rx) = rtrb::RingBuffer::<u64>::new(64);
 
@@ -114,7 +115,7 @@ fn main() -> Result<(), device::Error> {
 
     let target = (SAMPLE_RATE * o.buffer_ms / 1000) as usize;
     // 先預填靜音到目標水位，避免一開始就欠載
-    for _ in 0..target {
+    for _ in 0..target * 2 {
         let _ = out_prod.push(0.0);
     }
 
@@ -173,7 +174,8 @@ fn main() -> Result<(), device::Error> {
 
     let started = Instant::now();
     let mut last_report = Instant::now();
-    let fill_of = |p: &rtrb::Producer<f32>| cap - p.slots();
+    // 以「幀」（左右一對）為單位的水位
+    let fill_of = |p: &rtrb::Producer<f32>| (cap * 2 - p.slots()) / 2;
 
     while !stop.load(Ordering::Relaxed)
         && o.seconds.is_none_or(|s| started.elapsed() < Duration::from_secs(s))
@@ -235,6 +237,7 @@ fn main() -> Result<(), device::Error> {
                     ps.drift_drops += 1;
                 }
                 for &s in &pcm_out[skip..] {
+                    let _ = out_prod.push(s);
                     let _ = out_prod.push(s);
                 }
                 if !warmed_up {

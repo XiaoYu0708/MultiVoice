@@ -1,7 +1,8 @@
 //! 音訊裝置 I/O（cpal / WASAPI）。
 //!
 //! - 輸入：任意聲道數 → 混成 mono f32 → 推入 `rtrb` 環形緩衝
-//! - 輸出：從 `rtrb` 取 mono f32 → 複製到每個聲道；不足時補靜音並計一次欠載
+//! - 輸出：從 `rtrb` 取**立體聲**（左右交錯）f32 → 雙聲道裝置左右分開；單聲道裝置取平均；
+//!   多於兩聲道時前兩個放左右、其餘放平均。不足時補靜音並計一次欠載
 //! - 回呼內不配置記憶體、不上鎖、不印 log；統計值一律走 atomic
 //!
 //! 目前只支援 48 kHz 的裝置（與 Opus 一致）。其他取樣率會回傳錯誤，重取樣之後再加。
@@ -227,7 +228,7 @@ fn error_handler(stats: Arc<StreamStats>, label: &'static str) -> impl FnMut(cpa
     }
 }
 
-/// 開啟輸出串流。`gain` 為輸出增益（0 = 靜音，用於不出聲的自動測試）。
+/// 開啟輸出串流。`ring` 內為左右交錯的立體聲。`gain` 為輸出增益（0 = 靜音，用於不出聲的自動測試）。
 pub fn open_output(
     dev: &cpal::Device,
     ring: rtrb::Consumer<f32>,
@@ -275,20 +276,28 @@ where
             let mut peak = 0f32;
             let mut underrun = false;
             for (i, frame) in data.chunks_exact_mut(ch).enumerate() {
-                let s = match ring.pop() {
-                    Ok(s) => s,
-                    Err(_) => {
-                        underrun = true;
-                        0.0
-                    }
+                // 一次取一對，避免只取到左聲道造成左右錯位
+                let (l, r) = if ring.slots() >= 2 {
+                    (ring.pop().unwrap_or(0.0), ring.pop().unwrap_or(0.0))
+                } else {
+                    underrun = true;
+                    (0.0, 0.0)
                 };
-                peak = peak.max(s.abs());
+                let m = 0.5 * (l + r);
+                peak = peak.max(l.abs()).max(r.abs());
                 // 偵測用的是增益前的訊號，所以 gain = 0 時仍可量測延遲
                 if let Some(o) = onset.as_mut() {
-                    o.feed(s, (t0 + i as f64 * NANOS_PER_SAMPLE) as u64);
+                    o.feed(m, (t0 + i as f64 * NANOS_PER_SAMPLE) as u64);
                 }
-                let v = T::from_sample(s * gain);
-                frame.fill(v);
+                match frame {
+                    [only] => *only = T::from_sample(m * gain),
+                    [left, right, rest @ ..] => {
+                        *left = T::from_sample(l * gain);
+                        *right = T::from_sample(r * gain);
+                        rest.fill(T::from_sample(m * gain));
+                    }
+                    [] => {}
+                }
             }
             stats.note_peak(peak);
             if underrun {

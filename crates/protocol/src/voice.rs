@@ -1,12 +1,14 @@
 //! 語音 datagram（PLAN.md §4.3），手寫二進位標頭、小端序。
 //!
-//! 成員 → 房主（6 bytes 標頭）：
+//! 成員 → 房主（13 bytes 標頭）：
 //! ```text
 //! u8  kind        0x01 voice | 0x02 end-of-stream
-//! u8  target_id   預先註冊的 talk target（M1：0 = 所在的所有頻道）
-//! u32 seq         每幀 +1；換房主後不重置
+//! u64 talk_mask   要對哪些頻道說話（說話者自己的槽位，見 control 模組說明）
+//! u32 seq         每幀 +1；換房主、換裝置後都不重置
 //! [..] opus payload
 //! ```
+//! PLAN 原本設計成 1 byte 的「預先註冊 talk target」。改成直接帶遮罩：
+//! 不必等登記訊息（控制串流）比語音封包先到，PTT 組合也不用事先登記；代價是每包多 7 bytes。
 //! 房主 → 成員（15 bytes 標頭）：
 //! ```text
 //! u8  kind
@@ -35,13 +37,13 @@ impl Kind {
     }
 }
 
-pub const UP_HEADER: usize = 6;
+pub const UP_HEADER: usize = 13;
 pub const DOWN_HEADER: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceUp<'a> {
     pub kind: Kind,
-    pub target_id: u8,
+    pub talk_mask: u64,
     pub seq: u32,
     pub payload: &'a [u8],
 }
@@ -60,7 +62,7 @@ impl<'a> VoiceUp<'a> {
         out.clear();
         out.reserve(UP_HEADER + self.payload.len());
         out.push(self.kind as u8);
-        out.push(self.target_id);
+        out.extend_from_slice(&self.talk_mask.to_le_bytes());
         out.extend_from_slice(&self.seq.to_le_bytes());
         out.extend_from_slice(self.payload);
     }
@@ -71,8 +73,8 @@ impl<'a> VoiceUp<'a> {
         }
         Some(Self {
             kind: Kind::from_u8(b[0])?,
-            target_id: b[1],
-            seq: u32::from_le_bytes(b[2..6].try_into().ok()?),
+            talk_mask: u64::from_le_bytes(b[1..9].try_into().ok()?),
+            seq: u32::from_le_bytes(b[9..13].try_into().ok()?),
             payload: &b[UP_HEADER..],
         })
     }
@@ -115,7 +117,7 @@ mod tests {
     #[test]
     fn up_roundtrip_and_header_size() {
         let p = [0xAB; 80];
-        let up = VoiceUp { kind: Kind::Voice, target_id: 3, seq: 0xDEADBEEF, payload: &p };
+        let up = VoiceUp { kind: Kind::Voice, talk_mask: 1 << 63 | 0b101, seq: 0xDEADBEEF, payload: &p };
         let mut buf = Vec::new();
         up.encode(&mut buf);
         assert_eq!(buf.len(), UP_HEADER + 80);
@@ -125,7 +127,7 @@ mod tests {
     #[test]
     fn host_rewrite_to_down() {
         let p = [1, 2, 3];
-        let up = VoiceUp { kind: Kind::EndOfStream, target_id: 0, seq: 42, payload: &p };
+        let up = VoiceUp { kind: Kind::EndOfStream, talk_mask: 0, seq: 42, payload: &p };
         let down = up.to_down(7, 0b101);
         let mut buf = Vec::new();
         down.encode(&mut buf);
@@ -136,8 +138,8 @@ mod tests {
 
     #[test]
     fn rejects_short_and_unknown_kind() {
-        assert_eq!(VoiceUp::parse(&[1, 0, 0, 0, 0]), None);
-        assert_eq!(VoiceUp::parse(&[9, 0, 0, 0, 0, 0]), None);
+        assert_eq!(VoiceUp::parse(&[1; 12]), None);
+        assert_eq!(VoiceUp::parse(&[9; 13]), None);
         assert_eq!(VoiceDown::parse(&[1; 14]), None);
     }
 }

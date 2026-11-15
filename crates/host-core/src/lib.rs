@@ -1,9 +1,14 @@
-//! 房主邏輯（PLAN.md §3、§4）：加入驗證、成員管理、語音扇出。
+//! 房主邏輯（PLAN.md §3、§4）：加入驗證、成員與頻道管理、語音扇出。
 //!
-//! M1：單一頻道，所有成員互相收聽；語音原封不動轉發（不解碼、不混音）。
+//! 語音原封不動轉發（不解碼、不混音）：
+//! 1. 依說話者的 `talk_mask`（說話者自己的槽位）找出他要說話的頻道；只算他 `talk = true` 的訂閱
+//! 2. 這些頻道裡 `listen = true` 的成員都要收到；同一人在多個頻道也**只送一份**，
+//!    `via_mask` 用接收者自己的槽位標出經由哪些頻道
+//! 3. 上一幀還聽得到、這一幀不再聽得到的人（說話者換了頻道組合、或停止說話），補送 end-of-stream
+//!
 //! 同一個 NodeId 重新連線時沿用原本的 `session_idx`（為 M3 房主轉移鋪路）。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -12,17 +17,18 @@ use bytes::Bytes;
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use protocol::auth::verify_join_proof;
-use protocol::control::{ClientMsg, ErrorCode, HostMsg, MemberInfo};
+use protocol::control::{
+    ChannelInfo, ClientMsg, ErrorCode, HostMsg, MAX_CHANNEL_NAME_CHARS, MAX_CHANNELS, MAX_SLOTS, MemberInfo,
+    Subscription,
+};
 use protocol::ticket::{RoomId, RoomSecret};
-use protocol::voice::VoiceUp;
-use protocol::{NodeId, PROTOCOL_VERSION, SessionIdx};
+use protocol::voice::{Kind, VoiceDown, VoiceUp};
+use protocol::{ChannelId, DEFAULT_CHANNEL, DEFAULT_CHANNEL_NAME, NodeId, PROTOCOL_VERSION, SessionIdx};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 /// 加入流程（Hello → Challenge → Auth → Welcome）的逾時
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// M1 的 via_mask：唯一的預設頻道佔槽位 0
-const DEFAULT_VIA_MASK: u64 = 1;
 const MAX_NAME_CHARS: usize = 32;
 
 #[derive(Clone, Debug)]
@@ -33,18 +39,68 @@ pub struct HostConfig {
     pub max_members: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Sub {
+    slot: u8,
+    listen: bool,
+    talk: bool,
+}
+
 struct Member {
     info: MemberInfo,
     conn: Connection,
     ctrl: mpsc::UnboundedSender<HostMsg>,
+    subs: HashMap<ChannelId, Sub>,
+    /// 上一幀語音送給了誰（用來對「不再聽得到」的人補送 end-of-stream）
+    last_recipients: Mutex<Vec<SessionIdx>>,
 }
 
-#[derive(Default)]
 struct State {
     members: HashMap<SessionIdx, Member>,
     /// NodeId → session_idx，整個房間生命週期內固定
     idx_of: HashMap<NodeId, SessionIdx>,
     next_idx: SessionIdx,
+    channels: BTreeMap<ChannelId, String>,
+    next_channel: ChannelId,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            members: HashMap::new(),
+            idx_of: HashMap::new(),
+            next_idx: 0,
+            channels: BTreeMap::from([(DEFAULT_CHANNEL, DEFAULT_CHANNEL_NAME.to_string())]),
+            next_channel: DEFAULT_CHANNEL + 1,
+        }
+    }
+
+    fn broadcast(&self, msg: HostMsg) {
+        for m in self.members.values() {
+            let _ = m.ctrl.send(msg.clone());
+        }
+    }
+
+    fn channel_list(&self) -> Vec<ChannelInfo> {
+        self.channels.iter().map(|(&id, name)| ChannelInfo { id, name: name.clone() }).collect()
+    }
+
+    fn subscription_list(&self) -> Vec<Subscription> {
+        let mut v: Vec<_> = self
+            .members
+            .values()
+            .flat_map(|m| {
+                m.subs.iter().map(|(&channel, s)| Subscription {
+                    session_idx: m.info.session_idx,
+                    channel,
+                    listen: s.listen,
+                    talk: s.talk,
+                })
+            })
+            .collect();
+        v.sort_by_key(|s| (s.channel, s.session_idx));
+        v
+    }
 }
 
 /// 轉發統計
@@ -64,7 +120,7 @@ pub struct Host {
 
 impl Host {
     pub fn new(cfg: HostConfig) -> Self {
-        Self { cfg: Arc::new(cfg), state: Default::default(), stats: Default::default() }
+        Self { cfg: Arc::new(cfg), state: Arc::new(RwLock::new(State::new())), stats: Default::default() }
     }
 
     pub fn members(&self) -> Vec<MemberInfo> {
@@ -72,6 +128,14 @@ impl Host {
         let mut v: Vec<_> = st.members.values().map(|m| m.info.clone()).collect();
         v.sort_by_key(|m| m.session_idx);
         v
+    }
+
+    pub fn channels(&self) -> Vec<ChannelInfo> {
+        self.state.read().unwrap().channel_list()
+    }
+
+    pub fn subscriptions(&self) -> Vec<Subscription> {
+        self.state.read().unwrap().subscription_list()
     }
 
     pub fn stats(&self) -> HostStats {
@@ -134,11 +198,26 @@ impl Host {
             // 同一個 NodeId 的舊連線（例如網路切換後重連）直接取代
             if let Some(old) = st.members.remove(&idx) {
                 old.conn.close(2u32.into(), b"replaced by new connection");
+                for &ch in old.subs.keys() {
+                    st.broadcast(HostMsg::SubscriptionChanged(Subscription {
+                        session_idx: idx,
+                        channel: ch,
+                        listen: false,
+                        talk: false,
+                    }));
+                }
             }
-            for m in st.members.values() {
-                let _ = m.ctrl.send(HostMsg::MemberJoined(info.clone()));
-            }
-            st.members.insert(idx, Member { info: info.clone(), conn: conn.clone(), ctrl: ctrl_tx.clone() });
+            st.broadcast(HostMsg::MemberJoined(info.clone()));
+            st.members.insert(
+                idx,
+                Member {
+                    info: info.clone(),
+                    conn: conn.clone(),
+                    ctrl: ctrl_tx.clone(),
+                    subs: HashMap::new(),
+                    last_recipients: Mutex::new(Vec::new()),
+                },
+            );
         }
 
         let result = self.serve(&conn, idx, &mut recv, &ctrl_tx).await;
@@ -148,9 +227,7 @@ impl Host {
             // 只移除「這條」連線（可能已被新連線取代）
             if st.members.get(&idx).is_some_and(|m| m.conn.stable_id() == conn.stable_id()) {
                 st.members.remove(&idx);
-                for m in st.members.values() {
-                    let _ = m.ctrl.send(HostMsg::MemberLeft { session_idx: idx });
-                }
+                st.broadcast(HostMsg::MemberLeft { session_idx: idx });
                 info!("成員離開：#{idx} {}", info.display_name);
             }
         }
@@ -185,7 +262,7 @@ impl Host {
                     transport::write_msg(send, &reject(ErrorCode::AuthFailed, "邀請票無效或已失效")).await?;
                     bail!("加入證明錯誤");
                 }
-                sanitize_name(&display_name)
+                sanitize(&display_name, MAX_NAME_CHARS, "（未命名）")
             }
             other => bail!("預期 Auth，收到 {other:?}"),
         };
@@ -206,18 +283,24 @@ impl Host {
                         i
                     }
                 };
-                let others: Vec<_> =
+                let members: Vec<_> =
                     st.members.values().filter(|m| m.info.session_idx != idx).map(|m| m.info.clone()).collect();
-                Some((idx, others))
+                let subscriptions: Vec<_> =
+                    st.subscription_list().into_iter().filter(|s| s.session_idx != idx).collect();
+                Some((idx, members, st.channel_list(), subscriptions))
             }
         };
-        let Some((idx, members)) = assigned else {
+        let Some((idx, members, channels, subscriptions)) = assigned else {
             transport::write_msg(send, &reject(ErrorCode::RoomFull, "房間已滿")).await?;
             bail!("房間已滿");
         };
 
         let info = MemberInfo { session_idx: idx, node_id: client, display_name };
-        transport::write_msg(send, &HostMsg::Welcome { session_idx: idx, term: self.cfg.term, members }).await?;
+        transport::write_msg(
+            send,
+            &HostMsg::Welcome { session_idx: idx, term: self.cfg.term, members, channels, subscriptions },
+        )
+        .await?;
         Ok(info)
     }
 
@@ -231,14 +314,16 @@ impl Host {
         let mut out = Vec::with_capacity(1500);
         loop {
             tokio::select! {
-                msg = transport::read_msg::<ClientMsg>(recv) => match msg? {
-                    ClientMsg::Ping { t } => { let _ = ctrl.send(HostMsg::Pong { t }); }
-                    ClientMsg::Leave => {
+                msg = transport::read_msg::<ClientMsg>(recv) => {
+                    let msg = msg?;
+                    if matches!(msg, ClientMsg::Leave) {
                         conn.close(0u32.into(), b"bye");
                         return Ok(());
                     }
-                    other => warn!("#{idx} 送了不該在這時送的訊息：{other:?}"),
-                },
+                    if let Err((code, message)) = self.on_control(idx, msg, ctrl) {
+                        let _ = ctrl.send(HostMsg::Error { code, message: message.into() });
+                    }
+                }
                 d = conn.read_datagram() => {
                     let d = d.context("連線中斷")?;
                     self.forward(idx, &d, &mut out);
@@ -247,7 +332,83 @@ impl Host {
         }
     }
 
-    /// 單一頻道：轉給除了說話者以外的所有人
+    fn on_control(
+        &self,
+        idx: SessionIdx,
+        msg: ClientMsg,
+        ctrl: &mpsc::UnboundedSender<HostMsg>,
+    ) -> Result<(), (ErrorCode, &'static str)> {
+        let mut st = self.state.write().unwrap();
+        match msg {
+            ClientMsg::Ping { t } => {
+                let _ = ctrl.send(HostMsg::Pong { t });
+            }
+            ClientMsg::Subscribe { channel, slot, listen, talk } => {
+                if !st.channels.contains_key(&channel) {
+                    return Err((ErrorCode::NoSuchChannel, "頻道不存在"));
+                }
+                if slot >= MAX_SLOTS {
+                    return Err((ErrorCode::BadSlot, "槽位超出範圍"));
+                }
+                let me = st.members.get_mut(&idx).ok_or((ErrorCode::BadMessage, "成員不存在"))?;
+                if me.subs.iter().any(|(&c, s)| c != channel && s.slot == slot) {
+                    return Err((ErrorCode::BadSlot, "槽位已被其他頻道使用"));
+                }
+                if listen || talk {
+                    me.subs.insert(channel, Sub { slot, listen, talk });
+                } else {
+                    me.subs.remove(&channel);
+                }
+                st.broadcast(HostMsg::SubscriptionChanged(Subscription { session_idx: idx, channel, listen, talk }));
+            }
+            ClientMsg::Unsubscribe { channel } => {
+                let me = st.members.get_mut(&idx).ok_or((ErrorCode::BadMessage, "成員不存在"))?;
+                if me.subs.remove(&channel).is_some() {
+                    st.broadcast(HostMsg::SubscriptionChanged(Subscription {
+                        session_idx: idx,
+                        channel,
+                        listen: false,
+                        talk: false,
+                    }));
+                }
+            }
+            ClientMsg::CreateChannel { name } => {
+                if st.channels.len() >= MAX_CHANNELS {
+                    return Err((ErrorCode::TooManyChannels, "頻道數已達上限"));
+                }
+                let id = st.next_channel;
+                st.next_channel += 1;
+                let name = sanitize(&name, MAX_CHANNEL_NAME_CHARS, "新頻道");
+                st.channels.insert(id, name.clone());
+                st.broadcast(HostMsg::ChannelAdded(ChannelInfo { id, name }));
+            }
+            ClientMsg::RenameChannel { channel, name } => {
+                let name = sanitize(&name, MAX_CHANNEL_NAME_CHARS, "新頻道");
+                let slot = st.channels.get_mut(&channel).ok_or((ErrorCode::NoSuchChannel, "頻道不存在"))?;
+                *slot = name.clone();
+                st.broadcast(HostMsg::ChannelRenamed { channel, name });
+            }
+            ClientMsg::DeleteChannel { channel } => {
+                if channel == DEFAULT_CHANNEL {
+                    return Err((ErrorCode::Forbidden, "大廳不能刪除"));
+                }
+                if st.channels.remove(&channel).is_none() {
+                    return Err((ErrorCode::NoSuchChannel, "頻道不存在"));
+                }
+                for m in st.members.values_mut() {
+                    m.subs.remove(&channel);
+                }
+                st.broadcast(HostMsg::ChannelRemoved { channel });
+            }
+            other => {
+                warn!("#{idx} 送了不該在這時送的訊息：{other:?}");
+                return Err((ErrorCode::BadMessage, "非預期的訊息"));
+            }
+        }
+        Ok(())
+    }
+
+    /// 語音扇出（見模組說明）
     fn forward(&self, from: SessionIdx, datagram: &[u8], out: &mut Vec<u8>) {
         let mut stats = self.stats.lock().unwrap();
         stats.datagrams_in += 1;
@@ -255,22 +416,69 @@ impl Host {
             stats.bad_datagrams += 1;
             return;
         };
-        up.to_down(from, DEFAULT_VIA_MASK).encode(out);
-        let pkt = Bytes::copy_from_slice(out);
         let st = self.state.read().unwrap();
-        for (&i, m) in &st.members {
-            if i != from && m.conn.send_datagram(pkt.clone()).is_ok() {
+        let Some(sender) = st.members.get(&from) else { return };
+
+        // 說話者實際要送達的頻道：talk_mask 有設、且他在該頻道 talk = true
+        let talking: Vec<ChannelId> = if up.kind == Kind::Voice {
+            sender
+                .subs
+                .iter()
+                .filter(|(_, s)| s.talk && up.talk_mask & (1u64 << s.slot) != 0)
+                .map(|(&c, _)| c)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // 每位接收者的 via_mask（用接收者自己的槽位）；同一人只送一份
+        let mut recipients: Vec<(SessionIdx, u64)> = Vec::new();
+        if !talking.is_empty() {
+            for (&ri, r) in &st.members {
+                if ri == from {
+                    continue;
+                }
+                let mask = talking
+                    .iter()
+                    .filter_map(|c| r.subs.get(c))
+                    .filter(|s| s.listen)
+                    .fold(0u64, |m, s| m | 1u64 << s.slot);
+                if mask != 0 {
+                    recipients.push((ri, mask));
+                }
+            }
+        }
+
+        for &(ri, mask) in &recipients {
+            up.to_down(from, mask).encode(out);
+            if st.members[&ri].conn.send_datagram(Bytes::copy_from_slice(out)).is_ok() {
                 stats.datagrams_out += 1;
             }
         }
+
+        // 上一幀聽得到、這一幀聽不到的人：補送 end-of-stream，讓他們立刻結束這段話
+        let mut last = sender.last_recipients.lock().unwrap();
+        for &ri in last.iter() {
+            if recipients.iter().any(|&(r, _)| r == ri) {
+                continue;
+            }
+            if let Some(r) = st.members.get(&ri) {
+                VoiceDown { kind: Kind::EndOfStream, sender_idx: from, seq: up.seq, via_mask: 0, payload: &[] }
+                    .encode(out);
+                if r.conn.send_datagram(Bytes::copy_from_slice(out)).is_ok() {
+                    stats.datagrams_out += 1;
+                }
+            }
+        }
+        *last = recipients.into_iter().map(|(r, _)| r).collect();
     }
 }
 
-/// 顯示名稱：去掉控制字元、限制長度、不可為空
-fn sanitize_name(s: &str) -> String {
-    let n: String = s.chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect();
+/// 名稱：去掉控制字元、限制長度、不可為空
+fn sanitize(s: &str, max: usize, empty: &str) -> String {
+    let n: String = s.chars().filter(|c| !c.is_control()).take(max).collect();
     let n = n.trim().to_string();
-    if n.is_empty() { "（未命名）".into() } else { n }
+    if n.is_empty() { empty.into() } else { n }
 }
 
 #[cfg(test)]
@@ -279,8 +487,8 @@ mod tests {
 
     #[test]
     fn name_sanitizing() {
-        assert_eq!(sanitize_name("  小明\n\t "), "小明");
-        assert_eq!(sanitize_name("\u{7}"), "（未命名）");
-        assert_eq!(sanitize_name(&"長".repeat(100)).chars().count(), MAX_NAME_CHARS);
+        assert_eq!(sanitize("  小明\n\t ", MAX_NAME_CHARS, "x"), "小明");
+        assert_eq!(sanitize("\u{7}", MAX_NAME_CHARS, "（未命名）"), "（未命名）");
+        assert_eq!(sanitize(&"長".repeat(100), MAX_NAME_CHARS, "x").chars().count(), MAX_NAME_CHARS);
     }
 }

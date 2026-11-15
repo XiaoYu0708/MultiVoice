@@ -2,6 +2,7 @@
 
 pub mod jitter;
 pub mod mix;
+pub mod route;
 
 /// 一幀的長度（與 Opus 幀一致）
 pub const FRAME_MS: u64 = 20;

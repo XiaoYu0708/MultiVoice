@@ -1,23 +1,51 @@
 //! 控制訊息（PLAN.md §4.2）。
 //!
 //! 傳輸：iroh 雙向 stream，每則訊息為 `u32 LE 長度` + `postcard(訊息)`。
-//! M1 只實作加入、成員變動與 ping；多頻道（M2）、房主轉移（M3）的訊息之後加。
-//! 新增變體一律加在列舉**最後面**，postcard 以變體序號編碼，插在中間會破壞相容性。
+//! 新增變體一律加在列舉**最後面**，postcard 以變體序號編碼，插在中間會破壞相容性
+//! （不相容的變更要提高 [`crate::PROTOCOL_VERSION`]）。
+//!
+//! ## 頻道與槽位（M2）
+//! 成員訂閱頻道時**自己挑一個槽位**（0..64）告訴房主。之後：
+//! - 上行語音的 `talk_mask` 用「自己的槽位」表示要對哪些頻道說話
+//! - 下行語音的 `via_mask` 用「接收者自己的槽位」表示經由哪些頻道聽到
+//!
+//! 槽位由成員決定，所以不需要等房主回覆就能開始說話，也沒有登記訊息與語音封包的先後問題。
 
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{Nonce, Proof};
 use crate::ticket::RoomId;
-use crate::{NodeId, SessionIdx};
+use crate::{ChannelId, NodeId, SessionIdx};
 
 /// 單則控制訊息上限，防止惡意長度造成大量配置
 pub const MAX_FRAME: usize = 64 * 1024;
+/// 每位成員最多訂閱的頻道數（= 槽位數 = u64 遮罩的 bit 數）
+pub const MAX_SLOTS: u8 = 64;
+/// 房間最多頻道數
+pub const MAX_CHANNELS: usize = 64;
+pub const MAX_CHANNEL_NAME_CHARS: usize = 24;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberInfo {
     pub session_idx: SessionIdx,
     pub node_id: NodeId,
     pub display_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelInfo {
+    pub id: ChannelId,
+    pub name: String,
+}
+
+/// 某位成員在某頻道的狀態（所有人都看得到，PLAN.md §2.2：不允許隱形竊聽）。
+/// `listen` 與 `talk` 都是 false 代表已離開該頻道。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subscription {
+    pub session_idx: SessionIdx,
+    pub channel: ChannelId,
+    pub listen: bool,
+    pub talk: bool,
 }
 
 /// 成員 → 房主
@@ -29,6 +57,13 @@ pub enum ClientMsg {
     Auth { proof: Proof, display_name: String },
     Ping { t: u64 },
     Leave,
+    /// 加入或更新某頻道的訂閱。`slot` 由成員自己挑（同一成員的各頻道不可重複）。
+    /// `talk = false` 的頻道不會收到這位成員的聲音，即使 talk_mask 有設。
+    Subscribe { channel: ChannelId, slot: u8, listen: bool, talk: bool },
+    Unsubscribe { channel: ChannelId },
+    CreateChannel { name: String },
+    RenameChannel { channel: ChannelId, name: String },
+    DeleteChannel { channel: ChannelId },
 }
 
 /// 房主 → 成員
@@ -36,14 +71,25 @@ pub enum ClientMsg {
 pub enum HostMsg {
     /// 加入流程第 2 步
     Challenge { nonce: Nonce },
-    /// 加入流程第 4 步
-    Welcome { session_idx: SessionIdx, term: u64, members: Vec<MemberInfo> },
+    /// 加入流程第 4 步：完整的房間狀態
+    Welcome {
+        session_idx: SessionIdx,
+        term: u64,
+        members: Vec<MemberInfo>,
+        channels: Vec<ChannelInfo>,
+        subscriptions: Vec<Subscription>,
+    },
     MemberJoined(MemberInfo),
     MemberLeft { session_idx: SessionIdx },
     Pong { t: u64 },
     /// 不是房主時，告訴對方目前的房主（M3）
     Redirect { host: NodeId, term: u64 },
     Error { code: ErrorCode, message: String },
+    ChannelAdded(ChannelInfo),
+    ChannelRemoved { channel: ChannelId },
+    ChannelRenamed { channel: ChannelId, name: String },
+    /// 有人進出頻道或改變收聽／說話狀態（含自己，作為確認）
+    SubscriptionChanged(Subscription),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +100,11 @@ pub enum ErrorCode {
     Banned,
     RoomFull,
     BadMessage,
+    NoSuchChannel,
+    TooManyChannels,
+    BadSlot,
+    /// 預設頻道不能刪除
+    Forbidden,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,7 +162,11 @@ mod tests {
             session_idx: 3,
             term: 1,
             members: vec![MemberInfo { session_idx: 1, node_id: [9; 32], display_name: "會長".into() }],
+            channels: vec![ChannelInfo { id: 0, name: "大廳".into() }, ChannelInfo { id: 5, name: "指揮部".into() }],
+            subscriptions: vec![Subscription { session_idx: 1, channel: 5, listen: true, talk: false }],
         });
+        roundtrip(ClientMsg::Subscribe { channel: 5, slot: 63, listen: true, talk: true });
+        roundtrip(HostMsg::SubscriptionChanged(Subscription { session_idx: 2, channel: 0, listen: false, talk: false }));
         roundtrip(HostMsg::Error { code: ErrorCode::AuthFailed, message: "x".into() });
     }
 
