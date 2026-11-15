@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 anyhow = "1"
 getrandom = "0.4"
-iroh = "1"
+iroh = { version = "1", default-features = false, features = ["tls-ring"] }
 protocol = { path = "../protocol" }
 serde = "1"
-tokio = { version = "1", features = ["full"] }

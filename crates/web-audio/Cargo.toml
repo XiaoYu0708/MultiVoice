@@ -1,0 +1,22 @@
+[package]
+name = "web-audio"
+description = "MultiVoice 網頁客戶端的音訊引擎（在 AudioWorklet 裡跑）：Opus 編解碼、說話判斷、jitter buffer、每頻道混音"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libm = "0.2"
+mixer-core = { path = "../mixer-core" }
+nnnoiseless = { version = "0.5.2", default-features = false }
+protocol = { path = "../protocol" }
+
+# 原生建置（單元測試）用現成的 libopus；wasm 由 build.rs 從原始碼編譯
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+opusic-sys = "0.7"
+
+[build-dependencies]
+cc = "1"

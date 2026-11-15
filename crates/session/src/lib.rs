@@ -32,6 +32,7 @@ pub use mixer_core::route::ChannelMix;
 pub use audio::frontend::FrontendCfg;
 pub use pipeline::{AudioOpts, ChannelCfg, JitterSummary, Shared, TalkMode};
 pub use transport::RelaySetup as Relays;
+pub use transport::WEB_CLIENT_URL;
 
 /// 已連上房間，但音訊還沒啟動
 pub struct Connected {

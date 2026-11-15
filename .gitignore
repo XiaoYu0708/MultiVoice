@@ -1,4 +1,7 @@
 /target
 /.cargo/config.toml
 /dist
+# 網頁版部署輸出（tools/build-web.sh --deploy）
+/deploy/web/*
+!/deploy/web/.gitkeep
 .env

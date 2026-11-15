@@ -527,8 +527,8 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
 - [ ] 房間沉睡與喚醒
 
 ### M7：網頁客戶端（2–3 週）
-- [ ] WASM 建置、AudioWorklet 混音、WebCodecs/WASM Opus
-- [ ] 手機版介面（大顆 PTT 鈕）、PWA、邀請連結
+- [x] WASM 建置、AudioWorklet 混音、WASM Opus（libopus 用 clang 編譯；沒有用 WebCodecs：它不支援 FEC／PLC，也不能在 AudioWorklet 裡同步解碼）
+- [x] 手機版介面（大顆 PTT 鈕）、PWA、邀請連結
 - [ ] 實機測試：iOS Safari、Android Chrome
 
 ### M8：打磨與延伸（持續）

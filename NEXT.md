@@ -1,6 +1,6 @@
 # 接續工作清單
 
-> 最後更新：2026-11-15。完成一項就把它從這裡移除或打勾，並同步更新 `PLAN.md` 的里程碑。
+> 最後更新：2026-11-16。完成一項就把它從這裡移除或打勾，並同步更新 `PLAN.md` 的里程碑。
 
 ## 目前狀態
 - M0（技術驗證）：本機部分完成；跨網路三項待第二台裝置
@@ -8,7 +8,8 @@
 - **M2（多頻道收聽／開麥）：完成**（commit `e7899e7`、`656d9b7`）
 - **M4（桌面 UI）：完成**（頻道卡片、按鍵說話 PTT、提示音、系統匣、頻道設定檔）；PTT 待遊戲實測
 - **M3（房主轉移）：完成**（計畫性＋非預期轉移＋雙房主合併；剩先建後拆、候補排序、混沌測試）
-- M5：重取樣完成；M6：房主權限完成；M7：未開始
+- M5：重取樣完成；M6：房主權限完成
+- **M7（網頁客戶端）：第一版完成**（2026-11-16），待部署到 voice.<網域>、手機實機測試
 
 **GitHub**：`XiaoYu0708/MultiVoice`（公開）；發佈用 `tools/release.sh`，客戶端啟動時會提示新版本（見 CLAUDE.md「版本控制與發佈」）。
 
@@ -137,8 +138,28 @@
 - [ ] 自架 relay 改用 `access.shared_token`，客戶端 `RelayConfig::with_auth_token`
 - [ ] 房間沉睡／喚醒；**頻道設定（音量、pan、說話模式）的保存**也等這個一起做
 
-## 6. 之後
-- M7 網頁客戶端、M8 安裝程式／自動更新、手機原生 App 評估
+## 6. M7：網頁客戶端 — 第一版完成（2026-11-16）
+
+架構（PLAN.md §8）：
+- `crates/web`（wasm-bindgen，瀏覽器主執行緒）：iroh（WASM，一律經 relay）＋ `client-core`（與桌面版共用；計時與背景工作改用 `n0_future`，原生仍走 tokio）。網頁成員不當候補，換房主時只跟著改連（`find_new_host`）
+- `crates/web-audio`（C ABI，**不用** wasm-bindgen：AudioWorklet 沒有 TextDecoder）：libopus 用 clang 從原始碼編成 wasm（build.rs 讀 opusic-sys 附的原始碼，`libc/` 是最小標頭，malloc 與數學函式在 `src/libc.rs`）、RNNoise 人聲機率＋音量門檻、`mixer_core::talk`（與桌面版同一份說話遮罩與提示音）、jitter buffer（含 FEC／PLC）、每頻道混音
+- `crates/web/www/`：`index.html`、`app.js`（UI、頻道卡片、按住說話）、`worklet.js`、PWA（manifest、`sw.js`、圖示）
+- 降噪／回音消除／自動增益交給瀏覽器 getUserMedia；AudioContext 固定 48 kHz（瀏覽器不支援就報錯）
+- 建置：`tools/build-web.sh`（`--serve` 本機測試、`--deploy` 複製到 `deploy/web/`）
+- 測試：`node tools/headless.mjs <網址> <秒> --eval … --shot …`（無頭 Chrome、假麥克風）；Node 也能直接載入 `web_audio.wasm` 跑來回測試
+- 桌面版：「複製網頁版連結」（`WEB_CLIENT_URL#票`）；加入時可直接貼網頁版連結（`protocol::ticket::clean_input`）
+
+已驗證（2026-11-16，無頭 Chrome + CLI 房主，本機經自架 relay）：加入 0.9 秒、雙向語音、遺失 0%、多頻道＋按住說話、建立頻道、房主離開後自動改連接手者
+
+待做：
+- [ ] 部署：`tools/build-web.sh --deploy`；Caddyfile 已加 `encode` 與 `Cache-Control: no-cache`，要 reload Caddy 才生效（**部署前先問使用者**，會公開）
+- [ ] 實機測試：iOS Safari、Android Chrome（麥克風權限、背景中斷後的「開啟麥克風」、喇叭回音、耗電）
+- [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）
+- [ ] 網頁版的頻道左右定位、優先頻道（引擎已支援，UI 還沒放）
+- [ ] GitHub Pages 備援託管
+
+## 7. 之後
+- M8 安裝程式／自動更新、手機原生 App 評估
 
 ## 已知小問題
 - CLI 只能用 `--channel` 在啟動時建頻道，執行中沒有頻道指令

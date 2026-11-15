@@ -3,6 +3,10 @@
 
 voice.xiaoyu0708.ip-ddns.com {
 	root * /srv/web
+	# wasm 約 3 MB，壓縮後約 1 MB
+	encode zstd gzip
+	# 每次都向伺服器確認有沒有新版（有 ETag，沒變只回 304），部署後大家馬上拿到新版
+	header Cache-Control "no-cache"
 	file_server
 }
 

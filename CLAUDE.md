@@ -25,6 +25,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   [target.x86_64-pc-windows-gnu]
   rustflags = ["-C", "link-arg=-Wl,--exclude-all-symbols"]   # iroh 的 cdylib 在 debug 版超過 PE 65535 匯出上限
   ```
+- **網頁版**：`tools/build-web.sh`（輸出 `dist/web/`；`--serve` 開 http://127.0.0.1:8080/、`--deploy` 複製到 `deploy/web/`）。需要 `wasm32-unknown-unknown` target、`wasm-bindgen-cli` 0.2.130（要和 Cargo.lock 一致）、LLVM（`C:\Program Files\LLVM\bin`，腳本會自動加進 PATH）
 - release 版開 LTO，**完整編譯要好幾分鐘**：Bash 指令的 timeout 要給足（例如 900000 ms），不要把 `timeout N cargo …` 包得太短（會被中斷，exit 143）。
 - 正在執行的 `multivoice.exe` 會鎖住檔案，重編前要先關掉（`taskkill //F //IM multivoice.exe`）。
 - 寫含中文的 PowerShell 腳本時，PowerShell 5.1 會把無 BOM 的 UTF-8 當 ANSI 讀 → 腳本內容盡量用英文。
@@ -34,12 +35,14 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 |---|---|
 | `protocol` | 協定 v4（v3 房主轉移、v4 雙房主合併）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
 | `audio` | cpal 裝置（輸出為**立體聲**交錯、熱插拔偵測）、重取樣（`resample`）、Opus（libopus 1.6.1）、前端處理 `frontend`（RNNoise／DeepFilterNet3 降噪、VAD、AGC）、`list_devices` |
-| `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking） |
+| `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking）、說話遮罩與提示音（`talk`，桌面與網頁共用） |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
-| `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音、換房主時換連線（`reconnect`）、失聯偵測 |
+| `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音、換房主時換連線（`reconnect`）、失聯偵測；計時用 `n0_future`（可編 WASM） |
 | `hotkeys` | 全域按鍵：LL hook（不攔截）、按鍵解析、錄製模式（只在 Windows 有作用） |
 | `session` | 建房／加入（async）+ 房主轉移流程（`takeover.rs`）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
+| `web` | 網頁版（瀏覽器主執行緒，wasm-bindgen）：iroh WASM + `client-core`，前端檔案在 `crates/web/www/` |
+| `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、VAD、jitter buffer、混音 |
 | `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
@@ -62,7 +65,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - **M6（角色、踢人、封鎖、relay 權杖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」保留
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 62 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 66 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率
@@ -77,6 +80,8 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）
 - **UI 自動點擊前一定要確認 MultiVoice 是前景視窗**，否則會點到使用者的其他視窗；使用者正在用電腦時（例如剪貼簿內容變了）就停止自動點擊
 - 測試會在 `%APPDATA%\MultiVoice\` 產生 `identity-<profile>.key`、`settings-<profile>.toml`，**測完要刪掉測試用的**（保留 `identity-default.key`、`identity-test2.key`、`settings.toml`）。
+- **網頁版驗證**：`node tools/headless.mjs <網址> <秒> [--mobile] --eval "js" --eval sleep:N --shot 圖.png`（無頭 Chrome、假麥克風、自動允許權限；不需要 Chrome 擴充功能）。搭配背景的 CLI 房主與 `tools/build-web.sh --serve`
+- 網頁版的部署（`--deploy`，會公開到 voice.<網域>）**要先問使用者**
 - egui 字型是微軟正黑體，**沒有 emoji**（會顯示成方框），UI 不要用 emoji。
 
 ## 使用者的網路環境

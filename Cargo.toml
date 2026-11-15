@@ -12,6 +12,8 @@ members = [
     "crates/cli",
     "crates/desktop",
     "crates/netprobe",
+    "crates/web",
+    "crates/web-audio",
 ]
 
 [workspace.package]
@@ -23,4 +25,14 @@ publish = false
 lto = true
 codegen-units = 1
 panic = "abort"
+strip = true
+
+# 網頁版（tools/build-web.sh）：體積優先；只去掉除錯資訊，wasm-bindgen 需要 target_features 區段
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+strip = "debuginfo"
+
+# 音訊引擎不經過 wasm-bindgen，可以完全去掉符號
+[profile.wasm.package.web-audio]
 strip = true

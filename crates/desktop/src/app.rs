@@ -26,6 +26,8 @@ pub struct App {
     inputs: Vec<String>,
     outputs: Vec<String>,
     copied_at: Option<Instant>,
+    /// 複製網頁版連結
+    web_copied_at: Option<Instant>,
     /// 測試用：啟動後自動建房／加入
     auto: Option<Auto>,
     start_deafened: bool,
@@ -106,6 +108,7 @@ impl App {
             inputs: audio::device::list_devices(true),
             outputs: audio::device::list_devices(false),
             copied_at: None,
+            web_copied_at: None,
             applied: None,
             new_channel: String::new(),
             renaming: None,
@@ -219,7 +222,7 @@ impl App {
     }
 
     fn start_join(&mut self) {
-        let ticket = self.ticket_input.split_whitespace().collect::<String>();
+        let ticket = protocol::ticket::clean_input(&self.ticket_input);
         self.settings.last_ticket = ticket.clone();
         let (tx, rx) = mpsc::channel();
         let (profile, name) = (self.profile.clone(), self.settings.name.trim().to_string());
@@ -288,11 +291,11 @@ impl App {
         ui.weak("或加入別人的房間");
         ui.add(
             egui::TextEdit::multiline(&mut self.ticket_input)
-                .hint_text("貼上 mv1 開頭的邀請票（Ctrl+V）")
+                .hint_text("貼上 mv1 開頭的邀請票或網頁版邀請連結（Ctrl+V）")
                 .desired_rows(3)
                 .desired_width(f32::INFINITY),
         );
-        let ticket_ok = self.ticket_input.trim().starts_with("mv1");
+        let ticket_ok = protocol::ticket::clean_input(&self.ticket_input).starts_with("mv1");
         if ui.add_enabled(name_ok && ticket_ok && !busy, big("加入房間")).clicked() {
             self.start_join();
         }
@@ -408,9 +411,18 @@ impl App {
                         ui.ctx().copy_text(snap.ticket.clone());
                         self.copied_at = Some(Instant::now());
                     }
+                    let web_copied = self.web_copied_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2));
+                    if ui
+                        .button(if web_copied { "已複製" } else { "複製網頁版連結" })
+                        .on_hover_text("手機或沒裝 MultiVoice 的人，打開連結就能用瀏覽器加入")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(format!("{}#{}", session::WEB_CLIENT_URL, snap.ticket));
+                        self.web_copied_at = Some(Instant::now());
+                    }
                 });
             });
-            ui.weak("把邀請票傳給朋友，他們貼上就能加入");
+            ui.weak("把邀請票傳給朋友，他們貼上就能加入；沒裝程式的人可以用網頁版連結");
             // 房主負載（PLAN §6.4）：上傳被語音吃掉太多時，可以讓給別人
             if let Some(load) = snap.host_load {
                 ui.horizontal(|ui| {

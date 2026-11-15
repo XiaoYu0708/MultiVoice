@@ -9,16 +9,18 @@
 //! - 收到 [`ClientEvent::MigrateTo`]：房主要離開，指定了接手的人
 //! - 收到 [`ClientEvent::HostLost`]：與房主的連線意外中斷；上層依 [`Client::successors`] 找新房主，
 //!   找不到就呼叫 [`Client::give_up`]（之後才會有 [`ClientEvent::Disconnected`]）
+//!
+//! 計時與背景工作用 `n0_future`（原生走 tokio、瀏覽器走 wasm-bindgen-futures），網頁版（`crates/web`）也共用這個 crate。
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr};
+use n0_future::time::{Duration, Instant};
 use protocol::auth::join_proof;
 use protocol::control::{
     ChannelInfo, ClientMsg, ErrorCode, HostAddr, HostMsg, MAX_SLOTS, MemberInfo, Subscription, Successor,
@@ -479,14 +481,14 @@ impl Client {
             l.conn.clone()
         };
         inner.generation.send_modify(|g| *g += 1);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        n0_future::time::sleep(Duration::from_millis(100)).await;
         conn.close(0u32.into(), b"bye");
     }
 }
 
 /// 探測某個端點是不是這個房間的房主（雙房主合併用）。是的話回傳 (任期, 連線人數)
 pub async fn probe_host(ep: &Endpoint, addr: EndpointAddr, room_id: RoomId) -> Result<(u64, u32)> {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    n0_future::time::timeout(Duration::from_secs(2), async {
         let conn = ep.connect(addr, ALPN).await.context("無法連線")?;
         let (mut send, mut recv) = conn.open_bi().await?;
         transport::write_msg(&mut send, &ClientMsg::HostProbe { room_id }).await?;
@@ -502,7 +504,7 @@ pub async fn probe_host(ep: &Endpoint, addr: EndpointAddr, room_id: RoomId) -> R
 }
 
 async fn timed_handshake(ep: &Endpoint, addr: EndpointAddr, ticket: &Ticket, name: &str) -> Result<Handshake> {
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(ep, addr, ticket, name)).await.context("加入逾時")?
+    n0_future::time::timeout(HANDSHAKE_TIMEOUT, handshake(ep, addr, ticket, name)).await.context("加入逾時")?
 }
 
 async fn handshake(ep: &Endpoint, addr: EndpointAddr, ticket: &Ticket, name: &str) -> Result<Handshake> {
@@ -549,7 +551,7 @@ fn spawn_link_tasks(
     generation: u64,
 ) {
     // 寫入
-    tokio::spawn(async move {
+    n0_future::task::spawn(async move {
         while let Some(m) = ctrl_rx.recv().await {
             if transport::write_msg(&mut send, &m).await.is_err() {
                 break;
@@ -565,7 +567,7 @@ fn spawn_link_tasks(
         let inner = inner.clone();
         let conn = conn.clone();
         let last_rx = last_rx.clone();
-        tokio::spawn(async move {
+        n0_future::task::spawn(async move {
             let reason = loop {
                 let msg = transport::read_msg::<HostMsg>(&mut recv).await;
                 last_rx.store(inner.started.elapsed().as_millis() as u64, Ordering::Relaxed);
@@ -618,8 +620,8 @@ fn spawn_link_tasks(
     // ping + 失聯偵測
     {
         let inner = inner.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(PING_INTERVAL);
+        n0_future::task::spawn(async move {
+            let mut tick = n0_future::time::interval(PING_INTERVAL);
             loop {
                 tokio::select! {
                     _ = tick.tick() => {

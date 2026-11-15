@@ -50,6 +50,15 @@ impl std::fmt::Display for TicketError {
 
 impl std::error::Error for TicketError {}
 
+/// 使用者貼上的文字 → 邀請票字串：去掉空白，網頁版邀請連結（`https://…/#mv1…`）只取 `#` 後面
+pub fn clean_input(s: &str) -> String {
+    let s: String = s.split_whitespace().collect();
+    match s.rsplit_once('#') {
+        Some((_, t)) => t.to_string(),
+        None => s,
+    }
+}
+
 impl std::fmt::Display for Ticket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let bytes = postcard::to_allocvec(self).expect("Ticket 序列化不會失敗");
@@ -104,6 +113,15 @@ mod tests {
         let mut t = sample();
         t.bootstrap.clear();
         assert_eq!(t.to_string().parse::<Ticket>(), Err(TicketError::NoBootstrap));
+    }
+
+    #[test]
+    fn clean_web_link() {
+        let s = sample().to_string();
+        assert_eq!(clean_input(&format!("https://voice.example.com/#{s}")), s);
+        assert_eq!(clean_input(&format!(" {} 
+{}", &s[..10], &s[10..])), s, "聊天軟體斷行");
+        assert_eq!(clean_input(&s), s);
     }
 
     #[test]

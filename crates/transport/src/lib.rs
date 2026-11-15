@@ -16,6 +16,9 @@ pub use protocol::ALPN;
 /// 自架 relay（PLAN.md §7.3、§9）
 pub const DEFAULT_RELAY: &str = "https://relay.xiaoyu0708.ip-ddns.com/";
 
+/// 網頁版客戶端（PLAN.md §8）。邀請連結 = 這個網址 + `#` + 邀請票（票不會傳到網站）
+pub const WEB_CLIENT_URL: &str = "https://voice.xiaoyu0708.ip-ddns.com/";
+
 #[derive(Clone, Debug)]
 pub enum RelaySetup {
     /// 自架 relay 優先，n0 公共 relay 作為備援
@@ -48,12 +51,19 @@ pub async fn bind(secret: SecretKey, relays: RelaySetup, accept: bool) -> Result
 }
 
 /// 測試用：Disabled 模式下沒有位址查詢，要直接給本機位址
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 pub fn loopback_addr(ep: &Endpoint) -> EndpointAddr {
     let addrs = ep.bound_sockets().into_iter().map(|a| {
         let ip = if a.is_ipv4() { std::net::Ipv4Addr::LOCALHOST.into() } else { std::net::Ipv6Addr::LOCALHOST.into() };
         TransportAddr::Ip(SocketAddr::new(ip, a.port()))
     });
     EndpointAddr::from_parts(ep.id(), addrs)
+}
+
+/// 瀏覽器沒有 UDP socket：沒有本機位址
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+pub fn loopback_addr(ep: &Endpoint) -> EndpointAddr {
+    EndpointAddr::from(ep.id())
 }
 
 /// 端點目前的位址（直連位址、relay、本機 loopback）→ 可以傳給其他成員的 [`HostAddr`]。
