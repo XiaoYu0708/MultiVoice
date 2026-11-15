@@ -281,7 +281,7 @@ on voice datagram from S with target_id t:
 | 執行緒間傳遞 | `rtrb` / `ringbuf`（lock-free SPSC） | 音訊 callback 內**禁止**配置記憶體、上鎖、寫 log |
 | 非同步 | `tokio` | |
 | GUI | `eframe` / `egui` | 與 `副本退出快捷腳本` 一致，可沿用經驗 |
-| 系統匣 | `tray-icon` | 最小化到系統匣常駐 |
+| 系統匣 | Win32 `Shell_NotifyIconW`（`windows-sys`） | 原訂 `tray-icon`，改自己做：需要在 egui 視窗隱藏時繼續更新圖示 |
 | 全域熱鍵 / PTT | `windows-sys` `WH_KEYBOARD_LL` + `WH_MOUSE_LL` | 與 QuickExit 相同作法，支援滑鼠側鍵；PTT 預設**不攔截**按鍵 |
 | 設定與房間副本 | `serde` + `toml`（設定）、`postcard` 檔（房間副本） | `%APPDATA%\MultiVoice\` |
 | 日誌 | `tracing` + `tracing-appender` | |
@@ -497,9 +497,12 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
   - 測試用參數：`--profile`、`--auto-host`、`--auto-join <邀請票>`、`--deafen`
   - 共用邏輯抽到 `crates/session`（建房／加入 async、音訊同步啟動；cpal 串流不是 `Send`，Session 留在 UI 執行緒）
   - 不用 emoji：微軟正黑體沒有 emoji 字形，會顯示成方框
-- [ ] egui 主視窗：房間/頻道樹、每頻道控制列、說話指示燈、房主狀態（見下方草圖）（M2 多頻道完成後）
-- [ ] 全域 PTT 熱鍵（每頻道一鍵 + 全域廣播鍵 + 全域靜音鍵），支援滑鼠側鍵
-- [ ] 系統匣、開關麥提示音、裝置選擇、設定存檔
+- [x] egui 主視窗：頻道卡片（加入／離開、收聽、說話模式、音量／定位／優先、頻道內說話指示）；房主可改名／刪除頻道
+- [x] 全域 PTT 熱鍵（每頻道一鍵 + 全域廣播鍵 + 全域靜音鍵），支援滑鼠側鍵（`crates/hotkeys`；待遊戲實測）
+- [x] 系統匣、開關麥提示音、裝置選擇、設定存檔
+  - 系統匣不用 `tray-icon`：它要在 UI 執行緒更新，egui 視窗藏起來後畫面迴圈會停，遊戲中反而看不到狀態。
+    改成獨立執行緒 + Win32 `Shell_NotifyIconW`（`desktop/src/tray.rs`），圖示顏色：灰＝未進房、藍＝在房間、綠＝送出中、紅＋斜線＝靜音／拒聽
+  - 拒聽同時關麥（取消拒聽恢復原本的靜音）
 - [ ] 多組「設定檔」（Profile），例如「公會戰指揮」「一般副本」，一鍵切換訂閱組合
 
 ### M5：音質與穩定性（1–2 週）

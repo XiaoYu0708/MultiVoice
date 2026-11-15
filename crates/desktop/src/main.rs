@@ -4,6 +4,7 @@
 mod app;
 mod settings;
 mod style;
+mod tray;
 
 const TITLE: &str = "MultiVoice";
 
@@ -31,7 +32,14 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             style::setup(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(rt)))
+            // 系統匣需要主視窗的 HWND（藏起來／叫回來都直接用 Win32）
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+                _ => None,
+            };
+            let tray = hwnd.and_then(tray::Tray::start);
+            Ok(Box::new(app::App::new(rt, tray)))
         }),
     )
 }

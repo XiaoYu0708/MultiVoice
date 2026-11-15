@@ -365,6 +365,11 @@ impl Session {
         }
     }
 
+    /// 跨執行緒共用的即時狀態（系統匣執行緒讀取說話／靜音狀態、切換靜音用）
+    pub fn shared(&self) -> Arc<Shared> {
+        self.shared.clone()
+    }
+
     /// 見 [`Shared::set_muted`]：拒聽中取消靜音會一起取消拒聽
     pub fn set_muted(&self, v: bool) {
         self.shared.set_muted(v);

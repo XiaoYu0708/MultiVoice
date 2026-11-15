@@ -30,6 +30,8 @@ pub struct Settings {
     pub mute_key: Option<String>,
     /// 開／關麥提示音
     pub cues: bool,
+    /// 在房間中關閉視窗時縮到系統匣（不離開房間）
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +49,7 @@ impl Default for Settings {
             broadcast_key: None,
             mute_key: None,
             cues: true,
+            close_to_tray: true,
         }
     }
 }

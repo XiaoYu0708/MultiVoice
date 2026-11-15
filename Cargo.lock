@@ -875,11 +875,13 @@ dependencies = [
  "audio",
  "eframe",
  "protocol",
+ "raw-window-handle",
  "serde",
  "session",
  "tokio",
  "toml",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ use protocol::DEFAULT_CHANNEL;
 use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkeys};
 
 use crate::settings::Settings;
+use crate::tray::Tray;
 use crate::style::{AMBER, BLUE, GREEN, RED};
 
 pub struct App {
@@ -39,6 +40,10 @@ pub struct App {
     local_down: Vec<hotkeys::Trigger>,
     /// 按了一次「刪除」、等待確認的頻道與時間
     confirm_delete: Option<(u32, Instant)>,
+    /// 系統匣圖示（建立失敗時 None，關閉視窗就直接結束）
+    tray: Option<std::sync::Arc<Tray>>,
+    /// 這次執行是否已經顯示過「仍在執行」通知
+    tray_notified: bool,
 }
 
 /// 要設定的按鍵
@@ -57,7 +62,7 @@ enum Auto {
 
 impl App {
     /// 命令列參數（測試用）：`--profile 名稱`、`--auto-host`、`--auto-join 邀請票`、`--deafen`
-    pub fn new(rt: tokio::runtime::Runtime) -> Self {
+    pub fn new(rt: tokio::runtime::Runtime, tray: Option<std::sync::Arc<Tray>>) -> Self {
         let mut args = std::env::args().skip(1);
         let mut profile = "default".to_string();
         let mut auto = None;
@@ -94,6 +99,8 @@ impl App {
             hotkey_err: hotkeys::start().err(),
             local_down: Vec::new(),
             confirm_delete: None,
+            tray,
+            tray_notified: false,
         }
     }
 
@@ -134,6 +141,19 @@ impl App {
             if down {
                 self.local_down.push(t);
             }
+        }
+    }
+
+    /// 在房間中按 X：縮到系統匣（從系統匣選「結束」時才真的關閉）
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        let Some(t) = &self.tray else { return };
+        if self.session.is_some() && self.settings.close_to_tray && !t.quit_requested() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            t.hide_main(!self.tray_notified);
+            self.tray_notified = true;
         }
     }
 
@@ -212,6 +232,9 @@ impl App {
                 {
                     let _ = s.set_channel(DEFAULT_CHANNEL, Some(join_cfg(&self.settings, &s, &lobby.name)));
                 }
+                if let Some(t) = &self.tray {
+                    t.set_session(Some(s.shared()));
+                }
                 self.session = Some(s);
                 self.applied = Some(self.settings.audio_opts());
             }
@@ -220,6 +243,9 @@ impl App {
     }
 
     fn leave(&mut self) {
+        if let Some(t) = &self.tray {
+            t.set_session(None);
+        }
         if let Some(s) = self.session.take() {
             self.rt.spawn(s.leave());
         }
@@ -325,6 +351,9 @@ impl App {
             });
         }
         ui.checkbox(&mut self.settings.cues, "開／關麥提示音");
+        if self.tray.is_some() {
+            ui.checkbox(&mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
+        }
         if let Some(e) = &self.hotkey_err {
             ui.colored_label(RED, format!("全域按鍵無法使用：{e}"));
         } else if !hotkeys::is_admin() {
@@ -652,6 +681,7 @@ impl eframe::App for App {
             self.saved = self.settings.clone();
         }
 
+        self.handle_close(ui.ctx());
         self.feed_local_keys(ui.ctx());
         let snap = self.session.as_ref().map(|s| s.snapshot());
         self.poll_recording(snap.as_ref());
@@ -689,6 +719,10 @@ fn short(name: &str) -> &str {
 
 impl Drop for App {
     fn drop(&mut self) {
+        if let Some(t) = &self.tray {
+            t.set_session(None);
+            t.remove();
+        }
         if let Some(s) = self.session.take() {
             let fut = s.leave();
             let _ = self.rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), fut).await });
