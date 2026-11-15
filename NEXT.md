@@ -9,7 +9,7 @@
 - **M4（桌面 UI）：完成**（頻道卡片、按鍵說話 PTT、提示音、系統匣、頻道設定檔）；PTT 待遊戲實測
 - **M3（房主轉移）：完成**（計畫性＋非預期轉移＋雙房主合併；剩先建後拆、候補排序、混沌測試）
 - M5：重取樣完成；M6：房主權限完成
-- **M7（網頁客戶端）：第一版完成**（2026-11-16），待部署到 voice.<網域>、手機實機測試
+- **M7（網頁客戶端）：第一版完成並已部署**（2026-11-16），待手機實機測試
 
 **GitHub**：`XiaoYu0708/MultiVoice`（公開）；發佈用 `tools/release.sh`，客戶端啟動時會提示新版本（見 CLAUDE.md「版本控制與發佈」）。
 
@@ -152,7 +152,7 @@
 已驗證（2026-11-16，無頭 Chrome + CLI 房主，本機經自架 relay）：加入 0.9 秒、雙向語音、遺失 0%、多頻道＋按住說話、建立頻道、房主離開後自動改連接手者
 
 待做：
-- [ ] 部署：`tools/build-web.sh --deploy`；Caddyfile 已加 `encode` 與 `Cache-Control: no-cache`，要 reload Caddy 才生效（**部署前先問使用者**，會公開）
+- [x] 已部署（2026-11-16）：`tools/build-web.sh --deploy` 後 `MSYS_NO_PATHCONV=1 docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile`（在 deploy/ 執行；Git Bash 要關路徑轉換）。正式網址端對端測試通過。之後更新網頁版前**先問使用者**
 - [ ] 實機測試：iOS Safari、Android Chrome（麥克風權限、背景中斷後的「開啟麥克風」、喇叭回音、耗電）
 - [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）
 - [ ] 網頁版的頻道左右定位、優先頻道（引擎已支援，UI 還沒放）

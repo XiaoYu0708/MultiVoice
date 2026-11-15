@@ -38,7 +38,7 @@ ls -la "$OUT" "$OUT/pkg"
 case "${1:-}" in
   --deploy)
     mkdir -p deploy/web
-    find deploy/web -mindepth 1 -delete
+    find deploy/web -mindepth 1 ! -name .gitkeep -delete
     cp -r "$OUT"/. deploy/web/
     echo "已複製到 deploy/web/"
     ;;
