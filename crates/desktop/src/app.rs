@@ -817,7 +817,7 @@ impl eframe::App for App {
                 ui.heading("MultiVoice");
                 if let Some(s) = &self.session {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak(format!("麥克風：{}", short(&s.input_name)));
+                        ui.weak(format!("麥克風：{}", short(&s.input_name())));
                     });
                 }
             });

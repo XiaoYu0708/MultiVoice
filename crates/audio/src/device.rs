@@ -9,7 +9,7 @@
 //! `OnsetDetector` 與延遲量測工具假設 48 kHz（examples 開啟前會用 [`check_rate`] 檢查）。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
@@ -17,6 +17,8 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use crate::codec::SAMPLE_RATE;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+pub use cpal::Device;
 
 const NANOS_PER_SAMPLE: f64 = 1e9 / SAMPLE_RATE as f64;
 
@@ -35,6 +37,8 @@ pub struct StreamStats {
     peak_bits: AtomicU32,
     /// 回呼被呼叫的次數
     pub callbacks: AtomicU64,
+    /// 串流出錯（裝置被拔掉、驅動重置…），要重開
+    pub failed: AtomicBool,
 }
 
 impl StreamStats {
@@ -229,15 +233,30 @@ where
     Ok(stream)
 }
 
-/// xrun 只計數（串流剛啟動時 WASAPI 常回報一次），其他錯誤才印出來。
+/// xrun 只計數（串流剛啟動時 WASAPI 常回報一次）；其他錯誤（裝置被拔掉等）標記 `failed`，由上層重開。
 fn error_handler(stats: Arc<StreamStats>, label: &'static str) -> impl FnMut(cpal::Error) + Send + 'static {
     move |e: cpal::Error| {
         if e.kind() == cpal::ErrorKind::Xrun {
             stats.device_xruns.fetch_add(1, Ordering::Relaxed);
         } else {
-            eprintln!("{label}串流錯誤：{e}");
+            if !stats.failed.swap(true, Ordering::Relaxed) {
+                eprintln!("{label}串流錯誤：{e}");
+            }
         }
     }
+}
+
+/// 系統預設裝置的名稱（偵測「預設裝置換了」用）
+pub fn default_device_name(input: bool) -> Option<String> {
+    let host = cpal::default_host();
+    let d = if input { host.default_input_device() } else { host.default_output_device() };
+    d.map(|d| device_name(&d))
+}
+
+/// 有沒有名稱包含 `sub` 的裝置（指定的裝置插回來了沒）
+pub fn has_device(input: bool, sub: &str) -> bool {
+    let sub = sub.to_lowercase();
+    list_devices(input).iter().any(|n| n.to_lowercase().contains(&sub))
 }
 
 /// 開啟輸出串流。`ring` 內為左右交錯的立體聲。`gain` 為輸出增益（0 = 靜音，用於不出聲的自動測試）。

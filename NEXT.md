@@ -102,7 +102,12 @@
   環形緩衝裡是裝置取樣率，擷取執行緒轉成 48 kHz、播放執行緒轉成裝置取樣率（回呼內不做）。
   測試：單元測試（44.1↔48、96→48 的長度／頻率／振幅）；`MULTIVOICE_TEST_RATES=44100,44100` 強制開裝置的端對端測試
   （輸入 44.1k＋輸出 44.1k、輸出 22.05k、輸出 96k 都沒有欠載、沒有 PLC）。`cargo run -p audio --example rates` 列出各裝置取樣率
-- [ ] 斷線自動重連並恢復訂閱；裝置熱插拔
+- [x] 斷線自動重連並恢復訂閱：由 M3 的流程涵蓋（失聯後每 0.5 秒重試原房主／候補，最多 20 秒；訂閱自動重送）
+- [x] **裝置熱插拔**（2026-11-15）：`pipeline::AudioRunner` 在專屬執行緒持有 cpal 串流（不在 UI 執行緒，縮到系統匣也有效），
+  每秒檢查：串流出錯（`StreamStats::failed`）就重開；指定的裝置不見 → 先用系統預設、插回來自動切回；
+  設為「系統預設」時 Windows 換了預設裝置就跟著換；都開不起來時每 2 秒重試。訊息記在「最近事件」。
+  驗證：`cargo run -p session --example switch_device --release`（含 `simulate_audio_failure` 自動重開）。
+  **待使用者實測**：實際拔插 USB 耳機
 - [ ] AGC、麥克風測試介面（顯示原始／降噪後音量、底噪頻段分析，見 `audio/examples/mic_probe.rs`）
 - [ ] 評估 libopus 1.5（Deep PLC / DRED）、IAudioClient3 低延遲、DeepFilterNet
 - [ ] VAD 門檻可調

@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
     } else {
         println!("已加入（{} ms）", t.elapsed().as_millis());
     }
-    println!("你是 #{}「{}」。輸入：{}｜輸出：{}", snap.me.idx, snap.me.name, s.input_name, s.output_name);
+    println!("你是 #{}「{}」。輸入：{}｜輸出：{}", snap.me.idx, snap.me.name, s.input_name(), s.output_name());
     println!("輸入 m + Enter 切換靜音，q + Enter 離開。\n");
 
     if !o.channels.is_empty() {

@@ -188,7 +188,8 @@ impl RoomState {
 pub struct Session {
     client: Client,
     shared: Arc<Shared>,
-    audio: Option<pipeline::AudioHandle>,
+    /// 音訊裝置（專屬執行緒，處理熱插拔）
+    audio: Option<pipeline::AudioRunner>,
     endpoints: Vec<Endpoint>,
     /// 換房主的流程，也記著「我現在是不是房主」
     takeover: Arc<takeover::Takeover>,
@@ -196,8 +197,6 @@ pub struct Session {
     room: Arc<Mutex<RoomState>>,
     /// 目前套用中的音訊設定
     opts: AudioOpts,
-    pub input_name: String,
-    pub output_name: String,
 }
 
 impl Session {
@@ -206,7 +205,12 @@ impl Session {
         // 全域按鍵（PTT／廣播／靜音）；失敗不影響其他功能
         let hotkey_err = hotkeys::start().err();
         let shared = Arc::new(Shared::new());
-        let handle = match pipeline::start(c.client.clone(), shared.clone(), audio) {
+        let room = Arc::new(Mutex::new(RoomState::default()));
+        let log: takeover::Log = {
+            let room = room.clone();
+            Arc::new(move |s| room.lock().unwrap().push_log(s))
+        };
+        let handle = match pipeline::AudioRunner::start(c.client.clone(), shared.clone(), audio, log.clone()) {
             Ok(h) => h,
             Err(e) => {
                 // 音訊裝置打不開：離開房間、關閉端點，不留下半套連線
@@ -221,7 +225,6 @@ impl Session {
             }
         };
         pipeline::spawn_receive(c.client.clone(), shared.clone(), rt);
-        let room = Arc::new(Mutex::new(RoomState::default()));
         {
             let mut r = room.lock().unwrap();
             r.names = c.client.members().into_iter().map(|m| (m.session_idx, m.display_name)).collect();
@@ -231,10 +234,6 @@ impl Session {
                 r.push_log(format!("全域按鍵無法使用：{e}"));
             }
         }
-        let log: takeover::Log = {
-            let room = room.clone();
-            Arc::new(move |s| room.lock().unwrap().push_log(s))
-        };
         let takeover = takeover::Takeover::new(c.client.clone(), c.standby, c.host, log);
         {
             let _guard = rt.enter();
@@ -306,8 +305,6 @@ impl Session {
             }
         });
         let s = Session {
-            input_name: handle.input_name.clone(),
-            output_name: handle.output_name.clone(),
             client: c.client,
             shared,
             audio: Some(handle),
@@ -466,6 +463,23 @@ impl Session {
         self.shared.set_deafened(v);
     }
 
+    /// 目前使用的麥克風名稱
+    pub fn input_name(&self) -> String {
+        self.audio.as_ref().map(|a| a.names().0).unwrap_or_default()
+    }
+
+    /// 目前使用的耳機／喇叭名稱
+    pub fn output_name(&self) -> String {
+        self.audio.as_ref().map(|a| a.names().1).unwrap_or_default()
+    }
+
+    /// 測試用：假裝音訊裝置出錯（驗證熱插拔會自動重開）
+    pub fn simulate_audio_failure(&self) {
+        if let Some(a) = &self.audio {
+            a.simulate_failure();
+        }
+    }
+
     /// 進房後調整音訊設定。降噪、音量立即生效；換了裝置則重啟音訊（連線不中斷）。
     /// 新裝置開不起來時退回原本的裝置，並回傳錯誤。（開麥預設只影響之後加入的頻道）
     pub fn apply_audio(&mut self, new: &AudioOpts) -> Result<()> {
@@ -475,25 +489,17 @@ impl Session {
             self.opts = new.clone();
             return Ok(());
         }
-        // 先停掉舊的（等執行緒結束），避免兩組擷取執行緒同時送出
-        self.audio.take();
-        match pipeline::start(self.client.clone(), self.shared.clone(), new) {
-            Ok(h) => {
-                self.input_name = h.input_name.clone();
-                self.output_name = h.output_name.clone();
-                self.audio = Some(h);
+        let Some(a) = &self.audio else { return Ok(()) };
+        match a.apply(new) {
+            Ok(()) => {
                 self.opts = new.clone();
                 self.room.lock().unwrap().push_log("已切換音訊裝置".into());
                 Ok(())
             }
             Err(e) => {
                 // 保留新的即時設定，只退回裝置
-                let old = AudioOpts { input: self.opts.input.clone(), output: self.opts.output.clone(), ..new.clone() };
-                if let Ok(h) = pipeline::start(self.client.clone(), self.shared.clone(), &old) {
-                    self.audio = Some(h);
-                    self.opts = old;
-                }
-                Err(e.context("無法開啟新的音訊裝置，已改回原本的裝置"))
+                self.opts = AudioOpts { input: self.opts.input.clone(), output: self.opts.output.clone(), ..new.clone() };
+                Err(e)
             }
         }
     }

@@ -1,4 +1,5 @@
-//! 驗證進房後換裝置：連線不中斷、語音序號接續（對方不會把新封包當成遲到）。
+//! 驗證進房後換裝置：連線不中斷、語音序號接續（對方不會把新封包當成遲到）；
+//! 以及熱插拔：裝置出錯後自動重開。
 //! cargo run -p session --example switch_device --release -- <另一支麥克風的名稱片段>
 
 use std::time::Duration;
@@ -22,7 +23,7 @@ fn main() -> anyhow::Result<()> {
         let heard = s.members.iter().any(|m| m.name == "A" && m.speaking);
         println!(
             "{label:<24} A 麥克風：{:<45} B 聽到 A：{}｜遲到 {}｜跳過 {}｜PLC {}",
-            a.input_name, if heard { "是" } else { "否" }, s.jitter.late, s.jitter.skipped, s.jitter.plc
+            a.input_name(), if heard { "是" } else { "否" }, s.jitter.late, s.jitter.skipped, s.jitter.plc
         );
         heard
     };
@@ -34,6 +35,12 @@ fn main() -> anyhow::Result<()> {
     ok &= check(&format!("切到「{other_mic}」"), &a);
     a.apply_audio(&quiet)?;
     ok &= check("切回預設", &a);
+    // 熱插拔：假裝裝置被拔掉（串流出錯），音訊執行緒應該在 1 秒內自動重開
+    a.simulate_audio_failure();
+    ok &= check("模擬裝置中斷後", &a);
+    let restarted = a.snapshot().log.iter().any(|l| l.contains("重新開啟"));
+    println!("自動重開：{}", if restarted { "是" } else { "否" });
+    ok &= restarted;
     let late = b.snapshot().jitter.late;
     println!("\n結果：{}", if ok && late == 0 { "通過" } else { "失敗" });
 

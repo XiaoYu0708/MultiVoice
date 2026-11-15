@@ -12,6 +12,10 @@
 //!   語音序號存在 [`Shared`]，新的擷取執行緒接續編號，對方的 jitter buffer 不會把它當成遲到封包
 //!
 //! 接收語音的 task（[`spawn_receive`]）整個工作階段只開一次，換裝置不影響。
+//!
+//! 裝置熱插拔（[`AudioRunner`]）：音訊串流放在專屬執行緒（cpal 串流不能跨執行緒，放在 UI 執行緒的話，
+//! 視窗縮到系統匣時就沒人處理），每秒檢查：串流出錯（裝置被拔掉）就重開；指定的裝置不見時先用系統預設，
+//! 插回來再切回去；設定為「系統預設」時，Windows 換了預設裝置就跟著換。
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -346,6 +350,18 @@ pub struct AudioHandle {
     threads: Vec<JoinHandle<()>>,
     pub input_name: String,
     pub output_name: String,
+    in_stats: Arc<StreamStats>,
+    out_stats: Arc<StreamStats>,
+    /// 指定的裝置找不到，暫時用系統預設
+    in_fallback: bool,
+    out_fallback: bool,
+}
+
+impl AudioHandle {
+    /// 串流出錯了（裝置被拔掉等）
+    pub fn failed(&self) -> bool {
+        self.in_stats.failed.load(Ordering::Relaxed) || self.out_stats.failed.load(Ordering::Relaxed)
+    }
 }
 
 impl Drop for AudioHandle {
@@ -359,9 +375,21 @@ impl Drop for AudioHandle {
 }
 
 /// 開啟裝置並啟動擷取與播放執行緒
+/// 指定的裝置找不到時改用系統預設（回傳 (裝置, 是否為替代)）
+fn find_or_default(input: bool, name: Option<&str>) -> Result<(device::Device, bool)> {
+    match device::find_device(input, name) {
+        Ok(d) => Ok((d, false)),
+        Err(_) if name.is_some() => {
+            let d = device::find_device(input, None).map_err(anyhow::Error::from_boxed)?;
+            Ok((d, true))
+        }
+        Err(e) => Err(anyhow::Error::from_boxed(e)),
+    }
+}
+
 pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<AudioHandle> {
-    let in_dev = device::find_device(true, o.input.as_deref()).map_err(anyhow::Error::from_boxed)?;
-    let out_dev = device::find_device(false, o.output.as_deref()).map_err(anyhow::Error::from_boxed)?;
+    let (in_dev, in_fallback) = find_or_default(true, o.input.as_deref())?;
+    let (out_dev, out_fallback) = find_or_default(false, o.output.as_deref())?;
 
     // 裝置的取樣率不一定是 48 kHz（例如 44.1 kHz 耳機）：環形緩衝裡是裝置取樣率，
     // 擷取／播放執行緒負責轉換
@@ -386,7 +414,9 @@ pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<Audio
     // 輸出為左右交錯的立體聲
     let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(out_cap * 2);
 
-    let (in_stream, _) = device::open_input(&in_dev, in_prod, Arc::new(StreamStats::default()), None, force_in)
+    let in_stats = Arc::new(StreamStats::default());
+    shared.out_stats.failed.store(false, Ordering::Relaxed);
+    let (in_stream, _) = device::open_input(&in_dev, in_prod, in_stats.clone(), None, force_in)
         .map_err(anyhow::Error::from_boxed)?;
     let (out_stream, _) = device::open_output(&out_dev, out_cons, shared.out_stats.clone(), None, 1.0, force_out)
         .map_err(anyhow::Error::from_boxed)?;
@@ -395,7 +425,7 @@ pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<Audio
     let stop = Arc::new(AtomicBool::new(false));
     let threads = vec![
         spawn_capture(client, shared.clone(), stop.clone(), in_cons, o.bitrate, in_rate)?,
-        spawn_playback(shared, stop.clone(), out_prod, out_cap, o.buffer_ms, out_rate)?,
+        spawn_playback(shared.clone(), stop.clone(), out_prod, out_cap, o.buffer_ms, out_rate)?,
     ];
 
     Ok(AudioHandle {
@@ -404,7 +434,184 @@ pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<Audio
         threads,
         input_name: device::device_name(&in_dev),
         output_name: device::device_name(&out_dev),
+        in_stats,
+        out_stats: shared.out_stats.clone(),
+        in_fallback,
+        out_fallback,
     })
+}
+
+/// 給 UI 或 log 看的訊息
+pub type AudioLog = Arc<dyn Fn(String) + Send + Sync>;
+
+enum Cmd {
+    Apply(AudioOpts, std::sync::mpsc::Sender<Result<()>>),
+    /// 測試用：假裝裝置出錯
+    SimulateFailure,
+    Stop,
+}
+
+/// 在專屬執行緒持有音訊裝置，並處理熱插拔（見模組說明）。drop 時停止
+pub struct AudioRunner {
+    tx: std::sync::mpsc::Sender<Cmd>,
+    thread: Option<JoinHandle<()>>,
+    names: Arc<Mutex<(String, String)>>,
+}
+
+impl AudioRunner {
+    /// 開啟裝置（等第一次開啟的結果才返回）
+    pub fn start(client: Client, shared: Arc<Shared>, opts: &AudioOpts, log: AudioLog) -> Result<AudioRunner> {
+        let (tx, rx) = std::sync::mpsc::channel::<Cmd>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+        let names = Arc::new(Mutex::new((String::new(), String::new())));
+        let opts = opts.clone();
+        let names2 = names.clone();
+        let thread = std::thread::Builder::new().name("audio-owner".into()).spawn(move || {
+            let mut owner = Owner { client, shared, opts, log, names: names2, h: None, last_try: Instant::now() };
+            match owner.open() {
+                Ok(()) => {
+                    let _ = ready_tx.send(Ok(()));
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                    return;
+                }
+            }
+            owner.run(rx);
+        })?;
+        ready_rx.recv().map_err(|_| anyhow::anyhow!("音訊執行緒異常結束"))??;
+        Ok(AudioRunner { tx, thread: Some(thread), names })
+    }
+
+    /// 換裝置（會重開音訊）；新裝置開不起來時退回原本的裝置並回傳錯誤
+    pub fn apply(&self, opts: &AudioOpts) -> Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.tx.send(Cmd::Apply(opts.clone(), tx)).map_err(|_| anyhow::anyhow!("音訊執行緒已結束"))?;
+        rx.recv().map_err(|_| anyhow::anyhow!("音訊執行緒已結束"))?
+    }
+
+    /// 目前使用的 (輸入, 輸出) 裝置名稱
+    pub fn names(&self) -> (String, String) {
+        self.names.lock().unwrap().clone()
+    }
+
+    /// 測試用：假裝裝置出錯（驗證會自動重開）
+    pub fn simulate_failure(&self) {
+        let _ = self.tx.send(Cmd::SimulateFailure);
+    }
+}
+
+impl Drop for AudioRunner {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Cmd::Stop);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// 熱插拔檢查間隔
+const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
+/// 裝置開不起來時多久重試一次
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+struct Owner {
+    client: Client,
+    shared: Arc<Shared>,
+    opts: AudioOpts,
+    log: AudioLog,
+    names: Arc<Mutex<(String, String)>>,
+    h: Option<AudioHandle>,
+    last_try: Instant,
+}
+
+impl Owner {
+    fn open(&mut self) -> Result<()> {
+        // 先停掉舊的（等執行緒結束），避免兩組擷取執行緒同時送出
+        self.h = None;
+        self.last_try = Instant::now();
+        let h = start(self.client.clone(), self.shared.clone(), &self.opts)?;
+        *self.names.lock().unwrap() = (h.input_name.clone(), h.output_name.clone());
+        if h.in_fallback {
+            (self.log)(format!("找不到麥克風「{}」，暫時改用系統預設", self.opts.input.as_deref().unwrap_or_default()));
+        }
+        if h.out_fallback {
+            (self.log)(format!("找不到耳機「{}」，暫時改用系統預設", self.opts.output.as_deref().unwrap_or_default()));
+        }
+        self.h = Some(h);
+        Ok(())
+    }
+
+    fn run(&mut self, rx: std::sync::mpsc::Receiver<Cmd>) {
+        loop {
+            match rx.recv_timeout(HEALTH_INTERVAL) {
+                Ok(Cmd::Apply(o, reply)) => {
+                    let old = std::mem::replace(&mut self.opts, o);
+                    let r = match self.open() {
+                        Ok(()) => Ok(()),
+                        Err(e) => {
+                            // 退回原本的裝置
+                            self.opts = old;
+                            let _ = self.open();
+                            Err(e.context("無法開啟新的音訊裝置，已改回原本的裝置"))
+                        }
+                    };
+                    let _ = reply.send(r);
+                }
+                Ok(Cmd::SimulateFailure) => {
+                    if let Some(h) = &self.h {
+                        h.in_stats.failed.store(true, Ordering::Relaxed);
+                    }
+                }
+                Ok(Cmd::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.h = None;
+                    return;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => self.health(),
+            }
+        }
+    }
+
+    /// 熱插拔檢查
+    fn health(&mut self) {
+        if self.shared.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let reason = match &self.h {
+            // 上次重開失敗（例如唯一的耳機被拔掉）：定期重試
+            None if self.last_try.elapsed() >= RETRY_INTERVAL => Some(String::new()),
+            None => None,
+            Some(h) if h.failed() => Some("音訊裝置中斷".into()),
+            Some(h) => {
+                let changed = |input: bool, want: &Option<String>, cur: &str, fallback: bool| match want {
+                    // 跟著系統預設：預設換了
+                    None => device::default_device_name(input).is_some_and(|d| d != cur),
+                    // 指定的裝置插回來了
+                    Some(name) => fallback && device::has_device(input, name),
+                };
+                if changed(true, &self.opts.input, &h.input_name, h.in_fallback)
+                    || changed(false, &self.opts.output, &h.output_name, h.out_fallback)
+                {
+                    Some("音訊裝置有變動".into())
+                } else {
+                    None
+                }
+            }
+        };
+        let Some(reason) = reason else { return };
+        let was_down = self.h.is_none();
+        match self.open() {
+            Ok(()) => {
+                let (i, o) = self.names.lock().unwrap().clone();
+                (self.log)(format!("{}，已重新開啟（麥克風：{i}｜耳機：{o}）", if was_down { "音訊裝置恢復" } else { &reason }));
+            }
+            Err(e) => {
+                if !was_down {
+                    (self.log)(format!("{reason}，找不到可用的裝置（插回後會自動恢復）：{e:#}"));
+                }
+            }
+        }
+    }
 }
 
 fn spawn_capture(
