@@ -48,7 +48,7 @@ pub struct Connected {
 }
 
 /// 建立房間：本機同時跑房主邏輯與自己的客戶端
-pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<Connected> {
+pub async fn host_room(profile: &str, name: &str, relays: RelaySetup, can_host: bool) -> Result<Connected> {
     let key = identity::load_or_create(profile)?;
     // 只有房主自己（這個 profile 的身分）能改名／刪除頻道
     let owner = transport::node_id(&key.public());
@@ -72,13 +72,14 @@ pub async fn host_room(profile: &str, name: &str, relays: RelaySetup) -> Result<
     let (client, events) = Client::join_addr(&ep, transport::loopback_addr(&host_ep), &ticket, name).await?;
     // 房主也建備用端點：讓出房主後，之後還能再當候補
     let wait_online = !matches!(relays, RelaySetup::Disabled);
-    let standby = transport::bind(transport::generate_secret(), relays, true).await.ok();
+    let standby = if can_host { transport::bind(transport::generate_secret(), relays, true).await.ok() } else { None };
     let mut endpoints = vec![ep, host_ep];
     endpoints.extend(standby.clone());
     Ok(Connected { client, events, endpoints, host: Some(host), standby, wait_online, name: name.into() })
 }
 
-pub async fn join_room(ticket: &str, profile: &str, name: &str, relays: RelaySetup) -> Result<Connected> {
+/// `can_host = false`：不當房主候補（不建備用端點；房主離開時不會由我接手）
+pub async fn join_room(ticket: &str, profile: &str, name: &str, relays: RelaySetup, can_host: bool) -> Result<Connected> {
     let ticket: Ticket = ticket.parse().context("邀請票無效")?;
     let key = identity::load_or_create(profile)?;
     let wait_online = !matches!(relays, RelaySetup::Disabled);
@@ -86,7 +87,8 @@ pub async fn join_room(ticket: &str, profile: &str, name: &str, relays: RelaySet
     match Client::join(&ep, &ticket, name).await {
         Ok((client, events)) => {
             // 備用房主端點（房主離開或失聯時可能由我接手）；建不起來也不影響加入
-            let standby = transport::bind(transport::generate_secret(), relays, true).await.ok();
+            let standby =
+                if can_host { transport::bind(transport::generate_secret(), relays, true).await.ok() } else { None };
             let mut endpoints = vec![ep];
             endpoints.extend(standby.clone());
             Ok(Connected { client, events, endpoints, host: None, standby, wait_online, name: name.into() })
@@ -587,6 +589,8 @@ impl Session {
         let client = self.client.clone();
         let endpoints = std::mem::take(&mut self.endpoints);
         let host = self.takeover.host();
+        // 離開後不再參與換房主（不會在背景又接手當房主）
+        self.takeover.shutdown();
         async move {
             client.leave().await;
             // 我是房主：先交給第一候補，等大家改連過去再關（PLAN §5.2）。

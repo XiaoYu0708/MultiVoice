@@ -34,6 +34,8 @@ pub struct Settings {
     pub cues: bool,
     /// 在房間中關閉視窗時縮到系統匣（不離開房間）
     pub close_to_tray: bool,
+    /// 房主離開或斷線時可以由我接手當房主
+    pub allow_host: bool,
     /// 頻道設定檔（一鍵切換訂閱組合）
     pub presets: Vec<crate::presets::Preset>,
     /// 最近套用／儲存的設定檔（下次開啟時預先選好）
@@ -57,6 +59,7 @@ impl Default for Settings {
             ptt_keys: BTreeMap::new(),
             cues: true,
             close_to_tray: true,
+            allow_host: true,
             presets: Vec::new(),
             last_preset: None,
         }

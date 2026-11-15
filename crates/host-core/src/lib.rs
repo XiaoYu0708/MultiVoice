@@ -12,8 +12,9 @@
 //! 建立頻道所有人都可以。
 //!
 //! 房主轉移（M3，PLAN.md §5）：
-//! - 成員用 `Standby` 告知自己的備用房主端點；房主依 `session_idx`（越早進房越前面）排出候補名單，
-//!   有變動就廣播 `Successors`（房主自己不在名單裡）
+//! - 成員用 `Standby` 告知自己的備用房主端點；房主依**跟我的連線品質**排出候補名單（[`rank`]：直連優先於 relay、
+//!   延遲分級，同級才看 `session_idx` 越早進房越前面），有變動就廣播 `Successors`（房主自己不在名單裡）。
+//!   路徑會變（剛連上多半先走 relay，打洞成功後改直連），所以每 [`RERANK_INTERVAL`] 重排一次
 //! - [`Host::migrate`]：計畫性轉移，廣播 `MigrateTo` 給第一候補接手
 //! - 新房主用 [`HostConfig::seed`]（自己客戶端看到的頻道與成員）建立初始狀態，成員重連後 `session_idx` 不變
 //! - 雙房主合併：回應 `HostProbe`（任期、人數）；讓位時 [`Host::yield_to`] 廣播 `MoveTo` 後 [`Host::stop`]
@@ -40,6 +41,20 @@ use tracing::{debug, info, warn};
 /// 加入流程（Hello → Challenge → Auth → Welcome）的逾時
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_NAME_CHARS: usize = 32;
+/// 多久依連線品質重排一次候補名單
+pub const RERANK_INTERVAL: Duration = Duration::from_secs(3);
+
+/// 候補排序鍵（小的優先）：(走 relay, 延遲等級, 進房順序)。
+/// 跟房主直連的人，多半 NAT 比較好打洞，接手後跟其他人也比較可能直連；延遲分三級（< 60、< 150、其他 ms），
+/// 分級而不是直接比數字，避免延遲稍微抖動名單就換來換去
+pub fn rank(relay: bool, rtt: Option<Duration>, session_idx: SessionIdx) -> (bool, u8, SessionIdx) {
+    let tier = match rtt.map(|r| r.as_millis()) {
+        Some(ms) if ms < 60 => 0,
+        Some(ms) if ms < 150 => 1,
+        _ => 2,
+    };
+    (relay, tier, session_idx)
+}
 
 #[derive(Clone, Debug)]
 pub struct HostConfig {
@@ -113,15 +128,21 @@ impl State {
         st
     }
 
-    /// 重算候補名單（有備用端點、不是房主本人；越早進房越前面），有變動就廣播
+    /// 重算候補名單（有備用端點、不是房主本人；依 [`rank`] 排序），有變動就廣播
     fn update_successors(&mut self, owner: Option<NodeId>) {
-        let mut v: Vec<Successor> = self
+        let mut v: Vec<((bool, u8, SessionIdx), Successor)> = self
             .members
             .values()
             .filter(|m| Some(m.info.node_id) != owner)
-            .filter_map(|m| m.standby.clone().map(|host| Successor { session_idx: m.info.session_idx, host }))
+            .filter_map(|m| {
+                let host = m.standby.clone()?;
+                let path = m.conn.paths().iter().find(|p| p.is_selected()).map(|p| (p.is_relay(), p.rtt()));
+                let key = rank(path.is_none_or(|p| p.0), path.map(|p| p.1), m.info.session_idx);
+                Some((key, Successor { session_idx: m.info.session_idx, host }))
+            })
             .collect();
-        v.sort_by_key(|s| s.session_idx);
+        v.sort_by_key(|(k, _)| *k);
+        let v: Vec<Successor> = v.into_iter().map(|(_, s)| s).collect();
         if v != self.successors {
             self.successors = v.clone();
             self.broadcast(HostMsg::Successors(v));
@@ -249,6 +270,18 @@ impl Host {
 
     /// 接受連線直到端點關閉
     pub async fn run(&self, ep: Endpoint) {
+        // 連線品質會變：定期重排候補
+        let rerank = {
+            let host = self.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(RERANK_INTERVAL);
+                loop {
+                    tick.tick().await;
+                    host.state.write().unwrap().update_successors(host.cfg.owner);
+                }
+            })
+        };
+        let _rerank = AbortOnDrop(rerank);
         loop {
             let incoming = tokio::select! {
                 i = ep.accept() => match i { Some(i) => i, None => return },
@@ -629,5 +662,34 @@ mod tests {
         assert_eq!(sanitize("  小明\n\t ", MAX_NAME_CHARS, "x"), "小明");
         assert_eq!(sanitize("\u{7}", MAX_NAME_CHARS, "（未命名）"), "（未命名）");
         assert_eq!(sanitize(&"長".repeat(100), MAX_NAME_CHARS, "x").chars().count(), MAX_NAME_CHARS);
+    }
+}
+
+/// 結束時停掉背景工作
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[cfg(test)]
+mod rank_tests {
+    use super::*;
+
+    #[test]
+    fn direct_and_fast_first() {
+        let ms = Duration::from_millis;
+        let mut v = vec![
+            (rank(true, Some(ms(20)), 1), "relay"),
+            (rank(false, Some(ms(200)), 2), "直連但慢"),
+            (rank(false, Some(ms(30)), 5), "直連快、晚進房"),
+            (rank(false, Some(ms(45)), 3), "直連快、早進房"),
+            (rank(false, None, 4), "還不知道延遲"),
+        ];
+        v.sort_by_key(|x| x.0);
+        let order: Vec<&str> = v.iter().map(|x| x.1).collect();
+        assert_eq!(order, ["直連快、早進房", "直連快、晚進房", "直連但慢", "還不知道延遲", "relay"]);
     }
 }

@@ -9,9 +9,9 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let quiet = AudioOpts { open_mic: true, volume: 0.0, ..Default::default() };
 
-    let a = rt.block_on(session::host_room("mc-a", "A", Relays::Default))?;
+    let a = rt.block_on(session::host_room("mc-a", "A", Relays::Default, true))?;
     let a = Session::start(a, &quiet, rt.handle())?;
-    let b = rt.block_on(session::join_room(&a.snapshot().ticket, "mc-b", "B", Relays::Default))?;
+    let b = rt.block_on(session::join_room(&a.snapshot().ticket, "mc-b", "B", Relays::Default, true))?;
     let b = Session::start(b, &quiet, rt.handle())?;
 
     a.create_channel("指揮部");

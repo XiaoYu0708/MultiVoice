@@ -73,7 +73,7 @@
 - [x] 瀏覽器用 iroh WASM 經自架 relay 連房主（2026-11-16，M7 網頁版；使用者用手機在不同網路實測通話正常）
 - [ ] Docker Desktop 內 UDP 的直連效果（決定 `headless-host` 放 Docker 還是 Windows 原生）
 
-## 3. M3：房主轉移（PLAN.md §5）— 第一版完成（2026-11-15）
+## 3. M3：房主轉移（PLAN.md §5）— 完成（2026-11-16）
 做法（協定 v3：`ClientMsg::Standby`、`HostMsg::Successors`、`HostMsg::MigrateTo`）：
 - 每位加入者（`join_room`）多建一個**備用房主端點**，上線後 `Standby` 告訴房主；平常只做轉址（拿含它的邀請票來的人 → `Redirect` 到現任房主）
 - 房主依 `session_idx`（越早進房越前面）排候補名單，變動就廣播 `Successors`（房主自己不在內）
@@ -94,9 +94,10 @@
   測試：`split_brain_merges_back_into_bigger_room`、`old_host_with_fewer_members_yields`（約 3.7 秒合併）
 - 不做 `HostLostVote` 多數確認：斷網的人湊不到票、PLAN 也規定 10 秒後仍升任，最後還是靠合併收尾
 - [x] **先建後拆**（2026-11-16）：`Client::reconnect` 換到新房主後，舊連線再保留 `client_core::DRAIN`（1.5 秒），語音兩邊都送、兩邊都收（jitter buffer 依序號去重），舊連線上的控制訊息不再採用；房主離開時（`Session::leave`）等到沒人或 DRAIN 才關；改連重試間隔 300 → 100 ms。測試 `planned_migration_audio_gap`／`…_slow_member`：成員晚 400 ms 改連時，另一人聽到的空白從 357 ms（掉 16 包）降到 23 ms（0 遺失）
-- [ ] 候補排序只看進房先後，沒看直連／頻寬；`can_host`、「允許我成為房主」開關
-- [ ] `sim` 混沌測試
-- [ ] 原始房主（建房者）在 `host_room` 沒有備用端點：轉移後他若沒離開也不會再當候補（目前房主離開就是整個程式離開，沒影響）
+- [x] **候補排序看連線品質**（2026-11-16，`host_core::rank`）：房主依自己跟候補的連線排序：直連優先於 relay、延遲分三級（<60／<150／其他 ms，分級避免抖動），同級才看進房先後；每 3 秒重排（剛連上多半先走 relay）。不改協定。頻寬沒有量（要改協定讓成員回報），先不做
+- [x] **「允許我成為房主」**：桌面版大廳設定 `allow_host`（預設開）、CLI `--no-host`；關掉就不建備用端點、不當候補（`host_room`／`join_room` 的 `can_host`）
+- [x] **混沌測試** `chaos_sequence_keeps_single_host`：8 人房依序 計畫性轉移 → 房主當機 → 房主＋第一候補同時當機 → 轉移途中接手的人當機，每步都要收斂成單一房主、大家連到他、語音互通（約 17 秒；連跑 12 次都過）。抓到並修正：離開／當機的成員的換房主流程還在背景跑（會一直嘗試接手，造成多人同時升任）→ `Takeover::shutdown`，`Session::leave` 也會呼叫。測試輸出換房主過程：`TAKEOVER_LOG=1 cargo test -p session --test takeover chaos -- --nocapture`
+- [x] 原始房主也有備用端點（讓出房主後還能再當候補）
 
 ## 4. M5：音質與穩定性
 - [x] **重取樣**（2026-11-15）：`audio::resample::Resampler`（rubato 5 `Async::new_poly` Septic，10 ms 一塊，同取樣率直接傳過）；

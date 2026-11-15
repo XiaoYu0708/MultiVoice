@@ -16,6 +16,7 @@
 //!   --volume <倍數>      輸出音量（預設 1.0；0 = 靜音，用於自動測試）
 //!   --seconds <秒>       時間到自動離開（自動測試用）
 //!   --channel <名稱>     建立這個頻道並在裡面一直開麥，大廳改為只聽（可重複；自動測試用）
+//!   --no-host            不當房主候補（房主離開時不會由我接手）
 //!
 //! 執行中：輸入 m + Enter 切換靜音，q + Enter 離開。
 
@@ -33,6 +34,8 @@ struct Opts {
     audio: AudioOpts,
     seconds: Option<u64>,
     channels: Vec<String>,
+    /// 可以當房主候補（`--no-host` 關掉）
+    can_host: bool,
 }
 
 fn parse_args() -> Result<Opts> {
@@ -51,6 +54,7 @@ fn parse_args() -> Result<Opts> {
         audio: AudioOpts::default(),
         seconds: None,
         channels: Vec::new(),
+        can_host: true,
     };
     while let Some(a) = args.next() {
         let mut val = || args.next().with_context(|| format!("{a} 需要一個值"));
@@ -71,6 +75,7 @@ fn parse_args() -> Result<Opts> {
             "--volume" => o.audio.volume = val()?.parse()?,
             "--seconds" => o.seconds = Some(val()?.parse()?),
             "--channel" => o.channels.push(val()?),
+            "--no-host" => o.can_host = false,
             _ if o.ticket.is_none() && !a.starts_with("--") => o.ticket = Some(a),
             other => bail!("未知選項 {other}"),
         }
@@ -92,10 +97,11 @@ async fn main() -> Result<()> {
 
     let t = Instant::now();
     let connected = match o.mode.as_str() {
-        "host" => session::host_room(&o.profile, &o.name, o.relays.clone()).await?,
+        "host" => session::host_room(&o.profile, &o.name, o.relays.clone(), o.can_host).await?,
         "join" => {
             println!("加入中…");
-            session::join_room(o.ticket.as_deref().context("請提供邀請票")?, &o.profile, &o.name, o.relays.clone()).await?
+            session::join_room(o.ticket.as_deref().context("請提供邀請票")?, &o.profile, &o.name, o.relays.clone(), o.can_host)
+                .await?
         }
         other => bail!("未知模式 {other}（host 或 join）"),
     };

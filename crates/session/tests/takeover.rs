@@ -19,6 +19,7 @@ use tokio::time::timeout;
 use transport::RelaySetup;
 
 const T: Duration = Duration::from_secs(25);
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 struct Room {
     host_ep: Endpoint,
@@ -85,7 +86,18 @@ async fn connect_with(
     let addr = transport::loopback_addr(&room.host_ep);
     let (c, mut raw) = timeout(T, Client::join_addr(&ep, addr, &room.ticket, name)).await??;
     let standby = if standby { Some(transport::bind(transport::generate_secret(), RelaySetup::Disabled, true).await?) } else { None };
-    let t = Takeover::new(c.clone(), standby.clone(), host, Arc::new(|_| {}));
+    let tag = format!("{name}#{}", c.session_idx());
+    let t0 = *EPOCH.get_or_init(Instant::now);
+    let t = Takeover::new(
+        c.clone(),
+        standby.clone(),
+        host,
+        Arc::new(move |m| {
+            if std::env::var("TAKEOVER_LOG").is_ok() {
+                println!("{:>6.2}s [{tag}] {m}", t0.elapsed().as_secs_f64());
+            }
+        }),
+    );
     t.start_standby(false);
     t.start_merge_loop();
     let (tx, ev) = mpsc::unbounded_channel();
@@ -413,5 +425,146 @@ async fn audio_gap(c_name: &str, c_delay: Duration) -> Result<()> {
     println!("轉移期間：最長間隔 {max_gap:?}，遺失 {lost} 包（共 {} 包）", last - first + 1);
     assert!(max_gap < Duration::from_millis(150), "最長間隔 {max_gap:?}");
     assert!(lost <= 2, "遺失 {lost} 包");
+    Ok(())
+}
+
+/// 關掉一個成員的所有端點（模擬當機／斷網）；原始房主還要關掉房間的房主端點
+async fn kill(m: &M, room_ep: Option<&Endpoint>) {
+    // 當機的程式整個不在了：換房主流程也要停（否則測試裡會留下還在嘗試接手的「殭屍」）
+    m.t.shutdown();
+    m._ep.close().await;
+    if let Some(s) = &m.standby {
+        s.close().await;
+    }
+    if let Some(ep) = room_ep {
+        ep.close().await;
+    }
+}
+
+/// 房主照 `Session::leave` 的順序離開：migrate → 自己離開 → 等成員改連（沒人或 DRAIN）→ 關掉。回傳被指定接手的人
+async fn host_leaves(m: &M, room_ep: Option<&Endpoint>, before_close: impl AsyncFnOnce(u16)) -> u16 {
+    let host = m.t.host().expect("要是房主");
+    let next = host.migrate().expect("有候補").session_idx;
+    before_close(next).await;
+    m.c.leave().await;
+    let start = Instant::now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while host.member_count() > 0 && start.elapsed() < client_core::DRAIN {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    kill(m, room_ep).await;
+    next
+}
+
+/// 收斂：活著的人裡只有一個房主、所有人連到同一個房主、任期一致、房主那邊的人數正確，而且語音互通
+async fn converged(what: &str, ms: &[M], alive: &[usize]) -> u64 {
+    let dump = || {
+        for &i in alive {
+            let m = &ms[i];
+            println!(
+                "  [{i}] 自己 {:02x?} 備用 {:02x?} #{} host_id {:02x?} term {} 我是房主 {:?} 找房主中 {} 候補 {:?}",
+                &m.c.node_id()[..3],
+                m.standby.as_ref().map(|e| transport::node_id(&e.id())[..3].to_vec()),
+                m.c.session_idx(),
+                &m.c.host_id()[..3],
+                m.c.term(),
+                m.t.host().map(|h| (h.term(), h.member_count())),
+                m.t.recovering(),
+                m.c.successors().iter().map(|s| s.session_idx).collect::<Vec<_>>()
+            );
+        }
+    };
+    let ok = timeout(T, async {
+        loop {
+            let hosts: Vec<Host> = alive.iter().filter_map(|&i| ms[i].t.host()).collect();
+            let first = &ms[alive[0]].c;
+            if hosts.len() == 1
+                && alive.iter().all(|&i| ms[i].c.host_id() == first.host_id() && ms[i].c.term() == hosts[0].term())
+                && hosts[0].member_count() == alive.len()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    if ok.is_err() {
+        println!("  所有成員（含已關掉的）：");
+        for (i, m) in ms.iter().enumerate() {
+            println!(
+                "  [{i}] 自己 {:02x?} 備用 {:02x?} #{} 我是房主 {:?}",
+                &m.c.node_id()[..3],
+                m.standby.as_ref().map(|e| transport::node_id(&e.id())[..3].to_vec()),
+                m.c.session_idx(),
+                m.t.host().map(|h| (h.term(), h.member_count()))
+            );
+        }
+        println!("  活著的：");
+        dump();
+        panic!("等待逾時：{what}");
+    }
+    let term = ms[alive[0]].c.term();
+    // 最後兩個人：一個說、一個聽（訂閱要在新房主上重新登記好）
+    let (x, y) = (&ms[alive[alive.len() - 2]], &ms[alive[alive.len() - 1]]);
+    let speaker = talk(x.c.clone());
+    assert!(hears(&y.c, x.c.session_idx()).await, "{what}：語音要互通");
+    speaker.abort();
+    println!("{what}：收斂，任期 {term}，{} 人", alive.len());
+    term
+}
+
+/// 混沌測試：8 人房依序經歷 計畫性轉移 → 房主當機 → 房主與第一候補同時當機 → 轉移途中接手的人當機，
+/// 每一步之後都要收斂成單一房主、大家連到他、語音互通
+#[tokio::test(flavor = "multi_thread")]
+async fn chaos_sequence_keeps_single_host() -> Result<()> {
+    let started = Instant::now();
+    let (room, a) = start_room().await?;
+    let mut ms = vec![a];
+    for i in 1..8 {
+        let m = connect(&room, &format!("成員{i}"), transport::generate_secret(), None, true).await?;
+        m.c.subscribe(DEFAULT_CHANNEL, true, true)?;
+        ms.push(m);
+    }
+    wait_until("7 個候補都登記", || ms[1].c.successors().len() == 7).await;
+    let mut alive: Vec<usize> = (0..8).collect();
+    let pos = |ms: &[M], alive: &[usize], idx: u16| alive.iter().position(|&i| ms[i].c.session_idx() == idx).unwrap();
+    let host_pos = |ms: &[M], alive: &[usize]| alive.iter().position(|&i| ms[i].t.host().is_some()).unwrap();
+
+    // 1. 計畫性轉移：原始房主離開
+    host_leaves(&ms[0], Some(&room.host_ep), async |_| {}).await;
+    alive.remove(0);
+    let t1 = converged("1 計畫性轉移", &ms, &alive).await;
+
+    // 2. 房主當機
+    let h = alive.remove(host_pos(&ms, &alive));
+    kill(&ms[h], None).await;
+    let t2 = converged("2 房主當機", &ms, &alive).await;
+    assert!(t2 > t1);
+
+    // 3. 房主與第一候補同時當機
+    let h = alive.remove(host_pos(&ms, &alive));
+    let first = ms[alive[0]].c.successors()[0].session_idx;
+    let s = alive.remove(pos(&ms, &alive, first));
+    kill(&ms[h], None).await;
+    kill(&ms[s], None).await;
+    let t3 = converged("3 房主與第一候補同時當機", &ms, &alive).await;
+    assert!(t3 > t2);
+
+    // 4. 計畫性轉移途中，被指定接手的人當機
+    let h = alive.remove(host_pos(&ms, &alive));
+    let mut victim = None;
+    let next = host_leaves(&ms[h], None, async |next| {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let i = ms.iter().position(|m| m.c.session_idx() == next).unwrap();
+        kill(&ms[i], None).await;
+        victim = Some(i);
+    })
+    .await;
+    let v = victim.expect("接手的人");
+    assert_eq!(ms[v].c.session_idx(), next);
+    alive.retain(|&i| i != v);
+    let t4 = converged("4 轉移途中接手的人當機", &ms, &alive).await;
+    assert!(t4 > t3);
+    println!("混沌測試完成：{:?}", started.elapsed());
     Ok(())
 }

@@ -50,6 +50,8 @@ pub struct Takeover {
     stop_redirector: Arc<Notify>,
     /// 正在找新房主
     busy: AtomicBool,
+    /// 已經離開房間：不再找房主、不再接手（背景流程看到就結束）
+    stopped: AtomicBool,
     /// 升任前連的房主（合併時要探測它還在不在）
     prev_host: Mutex<Option<EndpointAddr>>,
     log: Log,
@@ -63,6 +65,7 @@ impl Takeover {
             host: Arc::new(Mutex::new(host)),
             stop_redirector: Arc::new(Notify::new()),
             busy: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             prev_host: Mutex::new(None),
             log,
         })
@@ -77,6 +80,9 @@ impl Takeover {
                 tick.tick().await;
                 if Arc::strong_count(&me) == 1 {
                     return; // 工作階段已結束
+                }
+                if me.stopped.load(Ordering::SeqCst) {
+                    return;
                 }
                 if me.host().is_some() && !me.busy.load(Ordering::SeqCst) {
                     me.merge_check().await;
@@ -146,7 +152,20 @@ impl Takeover {
     }
 
     /// 雙房主合併：目前的房主讓位，改連 `host`
+    /// 離開房間（或程式結束）：之後不再找房主、不再接手當房主
+    pub fn shutdown(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.stop_redirector.notify_one();
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
     pub async fn on_move(self: Arc<Self>, host: HostAddr) {
+        if self.is_stopped() {
+            return;
+        }
         if self.busy.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -221,6 +240,9 @@ impl Takeover {
     /// 以任期 `term` 升任房主：用我看到的房間狀態啟動 host-core，自己的客戶端改連過去。
     /// 平常由 [`Takeover::on_migrate`] / [`Takeover::on_host_lost`] 呼叫（公開是為了測試雙房主）
     pub async fn promote(&self, term: u64) -> Result<()> {
+        if self.is_stopped() {
+            anyhow::bail!("已經離開房間");
+        }
         *self.prev_host.lock().unwrap() = Some(self.client.host_addr());
         let ep = self.standby.clone().ok_or_else(|| anyhow::anyhow!("沒有備用端點"))?;
         let me = self.client.node_id();
@@ -256,6 +278,9 @@ impl Takeover {
 
     /// 計畫性轉移：房主要離開，指定 `session_idx` 接手
     pub async fn on_migrate(self: Arc<Self>, session_idx: SessionIdx, host: HostAddr, term: u64) {
+        if self.is_stopped() {
+            return;
+        }
         if self.busy.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -288,6 +313,9 @@ impl Takeover {
 
     /// 與房主失聯：找新房主，輪到自己就接手
     pub async fn on_host_lost(self: Arc<Self>) {
+        if self.is_stopped() {
+            return;
+        }
         {
             if self.busy.swap(true, Ordering::SeqCst) {
                 return;
@@ -327,7 +355,7 @@ impl Takeover {
                         break 'outer true;
                     }
                 }
-                if started.elapsed() > GIVE_UP_AFTER {
+                if started.elapsed() > GIVE_UP_AFTER || self.is_stopped() {
                     break false;
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;

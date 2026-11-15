@@ -11,10 +11,10 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let quiet = AudioOpts { open_mic: true, volume: 0.0, ..Default::default() };
 
-    let a = rt.block_on(session::host_room("switch-a", "A", Relays::Default))?;
+    let a = rt.block_on(session::host_room("switch-a", "A", Relays::Default, true))?;
     let mut a = Session::start(a, &quiet, rt.handle())?;
     let ticket = a.snapshot().ticket;
-    let b = rt.block_on(session::join_room(&ticket, "switch-b", "B", Relays::Default))?;
+    let b = rt.block_on(session::join_room(&ticket, "switch-b", "B", Relays::Default, true))?;
     let b = Session::start(b, &quiet, rt.handle())?;
 
     let check = |label: &str, a: &Session| {

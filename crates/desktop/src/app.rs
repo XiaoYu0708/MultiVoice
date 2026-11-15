@@ -227,8 +227,9 @@ impl App {
     fn start_host(&mut self) {
         let (tx, rx) = mpsc::channel();
         let (profile, name) = (self.profile.clone(), self.settings.name.trim().to_string());
+        let can_host = self.settings.allow_host;
         self.rt.spawn(async move {
-            let _ = tx.send(session::host_room(&profile, &name, Relays::Default).await);
+            let _ = tx.send(session::host_room(&profile, &name, Relays::Default, can_host).await);
         });
         self.pending = Some((rx, "建立房間中…"));
         self.error = None;
@@ -239,8 +240,9 @@ impl App {
         self.settings.last_ticket = ticket.clone();
         let (tx, rx) = mpsc::channel();
         let (profile, name) = (self.profile.clone(), self.settings.name.trim().to_string());
+        let can_host = self.settings.allow_host;
         self.rt.spawn(async move {
-            let _ = tx.send(session::join_room(&ticket, &profile, &name, Relays::Default).await);
+            let _ = tx.send(session::join_room(&ticket, &profile, &name, Relays::Default, can_host).await);
         });
         self.pending = Some((rx, "加入房間中…"));
         self.error = None;
@@ -393,6 +395,8 @@ impl App {
         if self.tray.is_some() {
             ui.checkbox(&mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
         }
+        ui.checkbox(&mut self.settings.allow_host, "房主離開或斷線時，可以由我接手當房主")
+            .on_hover_text("網路很慢或電腦效能不好時可以關掉；下次進房才生效");
         if let Some(e) = &self.hotkey_err {
             ui.colored_label(RED, format!("按鍵說話無法使用：{e}"));
         } else if !hotkeys::is_admin() {
