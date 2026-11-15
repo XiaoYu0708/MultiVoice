@@ -14,6 +14,7 @@
 
 1. 到 [Releases](https://github.com/XiaoYu0708/MultiVoice/releases/latest) 下載 `multivoice.exe`，直接執行（不需安裝）
    - 執行檔沒有數位簽章，Windows 可能會跳出 SmartScreen 警告，按「其他資訊 → 仍要執行」
+   - Windows Defender 也可能把它當成病毒擋下來，詳見下方〈[被 Windows Defender 擋下來？](#被-windows-defender-擋下來)〉
 2. 一個人按「建立房間」，把「複製邀請票」得到的 `mv1…` 文字傳給朋友
 3. 朋友貼上邀請票按「加入房間」
 
@@ -23,6 +24,25 @@
 有新版本時程式會在畫面上方提示。**房間裡的人版本要一致**（不同版本可能無法連線）。
 
 如果遊戲以系統管理員身分執行，MultiVoice 也要以系統管理員身分執行，按鍵說話才收得到按鍵。
+
+### 被 Windows Defender 擋下來？
+
+Defender 可能把下載的 `multivoice.exe` 判定成木馬並移除，名稱通常類似 `Trojan:Win32/Bearfoos.A!ml`。
+結尾的 `!ml` 代表這是**機器學習的推測**，不是比對到已知病毒。新發佈、沒有數位簽章、下載人數少的程式很常被這樣誤判；
+MultiVoice 又有幾個表面上像惡意程式的行為，更容易被誤判：
+- 全域按鍵監聽（遊戲中按鍵說話要用）
+- 自己下載新版並替換執行檔（一鍵更新）
+- 以系統管理員身分重新啟動自己
+- 點對點網路連線
+
+程式碼全部公開在這個儲存庫，可以自己檢查或從原始碼建置。要確認下載的檔案沒被竄改：
+
+1. 在 [Releases](https://github.com/XiaoYu0708/MultiVoice/releases/latest) 頁面看 `multivoice.exe` 旁邊的 SHA-256
+2. 在下載的檔案所在資料夾開 PowerShell 執行 `Get-FileHash multivoice.exe`，兩邊一致就是官方發佈的檔案
+
+確認後如果要使用：開「Windows 安全性 → 病毒與威脅防護 → 保護歷程記錄」，點那筆記錄，選「動作 → 允許」或「還原」。
+也歡迎到 [Microsoft 的誤判回報頁面](https://www.microsoft.com/en-us/wdsi/filesubmission) 提交檔案（選「不是惡意程式」），
+回報的人越多，誤判越快被修正。不想處理的話，也可以先用網頁版。
 
 ## 從原始碼建置
 
