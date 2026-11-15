@@ -1,0 +1,203 @@
+//! 全域按鍵：按鍵名稱解析（"F9"、"Ctrl+Q"、"Mouse4"…）與按住狀態查詢。
+//!
+//! Windows 上 [`start`] 會開一條執行緒安裝 `WH_KEYBOARD_LL` / `WH_MOUSE_LL`，
+//! 只記錄「目前按住哪些鍵」，**不攔截**（遊戲照樣收得到）。
+//! 其他平台 [`start`] 回傳錯誤，[`Hotkey::held`] 永遠是 false。
+
+mod keys;
+#[cfg(windows)]
+mod hook;
+
+pub use keys::{Hotkey, Trigger, key_name, parse_key};
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// 0..=255：虛擬鍵碼；256..：滑鼠按鍵
+const SLOTS: usize = 5;
+static DOWN: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
+/// hook 收到的事件總數（UI 用來判斷「遊戲在前景時是否還收得到按鍵」）
+static EVENTS: AtomicU64 = AtomicU64::new(0);
+
+static RECORDING: AtomicBool = AtomicBool::new(false);
+static RECORDED: Mutex<Option<Recorded>> = Mutex::new(None);
+
+/// 錄製模式的結果
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recorded {
+    Key(Hotkey),
+    Cancelled,
+}
+
+fn bit(t: Trigger) -> usize {
+    match t {
+        Trigger::Key(vk) => (vk & 0xFF) as usize,
+        Trigger::MouseMiddle => 256,
+        Trigger::MouseX1 => 257,
+        Trigger::MouseX2 => 258,
+    }
+}
+
+fn set_down(t: Trigger, down: bool) {
+    let b = bit(t);
+    let m = 1u64 << (b % 64);
+    if down {
+        DOWN[b / 64].fetch_or(m, Ordering::Relaxed);
+    } else {
+        DOWN[b / 64].fetch_and(!m, Ordering::Relaxed);
+    }
+}
+
+fn raw_down(t: Trigger) -> bool {
+    let b = bit(t);
+    DOWN[b / 64].load(Ordering::Relaxed) & (1 << (b % 64)) != 0
+}
+
+/// 某個觸發鍵是否按住（Ctrl/Alt/Shift/Win 不分左右）
+pub fn is_down(t: Trigger) -> bool {
+    keys::variants(t).iter().any(|&v| raw_down(v))
+}
+
+/// 目前按住的修飾鍵 (ctrl, alt, shift, win)
+pub fn modifiers() -> (bool, bool, bool, bool) {
+    use keys::*;
+    (
+        is_down(Trigger::Key(VK_CONTROL)),
+        is_down(Trigger::Key(VK_MENU)),
+        is_down(Trigger::Key(VK_SHIFT)),
+        is_down(Trigger::Key(VK_LWIN)),
+    )
+}
+
+pub fn event_count() -> u64 {
+    EVENTS.load(Ordering::Relaxed)
+}
+
+/// 進入錄製模式：下一個按下的鍵（可帶修飾鍵；單按修飾鍵後放開也算；Esc 取消）
+/// 由 [`take_recorded`] 取回
+pub fn start_recording() {
+    *RECORDED.lock().unwrap() = None;
+    keys::reset_record_state();
+    RECORDING.store(true, Ordering::SeqCst);
+}
+
+pub fn cancel_recording() {
+    RECORDING.store(false, Ordering::SeqCst);
+}
+
+pub fn is_recording() -> bool {
+    RECORDING.load(Ordering::SeqCst)
+}
+
+pub fn take_recorded() -> Option<Recorded> {
+    RECORDED.lock().unwrap().take()
+}
+
+/// hook 收到一個按下／放開事件（hook 執行緒呼叫；測試也直接呼叫）
+pub(crate) fn on_input(t: Trigger, down: bool) {
+    EVENTS.fetch_add(1, Ordering::Relaxed);
+    // 自動重複的 keydown 不影響狀態
+    set_down(t, down);
+    if RECORDING.load(Ordering::SeqCst) {
+        if let Some(r) = keys::record_step(t, down) {
+            RECORDING.store(false, Ordering::SeqCst);
+            *RECORDED.lock().unwrap() = Some(r);
+        }
+    }
+}
+
+/// 啟動全域 hook（整個程式只需呼叫一次；重複呼叫直接回傳 Ok）
+pub fn start() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        hook::start()
+    }
+    #[cfg(not(windows))]
+    {
+        Err("全域按鍵目前只支援 Windows".into())
+    }
+}
+
+/// 本程式是否以系統管理員身分執行（遊戲是管理員時，非管理員程式收不到它的按鍵）
+pub fn is_admin() -> bool {
+    #[cfg(windows)]
+    {
+        hook::is_admin()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// 以系統管理員身分重新啟動自己（帶原本的參數）；成功送出要求回傳 true
+pub fn relaunch_as_admin() -> bool {
+    #[cfg(windows)]
+    {
+        hook::relaunch_as_admin()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keys::*;
+
+    // 按鍵狀態是全域的，測試要依序執行
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn held_with_modifiers() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let hk: Hotkey = "Ctrl+F7".parse().unwrap();
+        assert!(!hk.held());
+        on_input(Trigger::Key(0x76), true);
+        assert!(!hk.held(), "沒按 Ctrl");
+        on_input(Trigger::Key(VK_RCONTROL), true);
+        assert!(hk.held(), "右 Ctrl 也算 Ctrl");
+        on_input(Trigger::Key(0x76), false);
+        assert!(!hk.held());
+        on_input(Trigger::Key(VK_RCONTROL), false);
+
+        let m: Hotkey = "Mouse4".parse().unwrap();
+        on_input(Trigger::MouseX1, true);
+        assert!(m.held());
+        on_input(Trigger::MouseX1, false);
+        assert!(!m.held());
+    }
+
+    #[test]
+    fn recording() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start_recording();
+        on_input(Trigger::Key(VK_LSHIFT), true);
+        assert!(take_recorded().is_none(), "只按修飾鍵還不算");
+        on_input(Trigger::Key(0x48), true); // H
+        assert_eq!(take_recorded(), Some(Recorded::Key("Shift+H".parse().unwrap())));
+        on_input(Trigger::Key(0x48), false);
+        on_input(Trigger::Key(VK_LSHIFT), false);
+
+        start_recording();
+        on_input(Trigger::Key(VK_LMENU), true);
+        on_input(Trigger::Key(VK_LMENU), false);
+        assert_eq!(take_recorded(), Some(Recorded::Key("LAlt".parse().unwrap())), "單按修飾鍵放開");
+
+        start_recording();
+        on_input(Trigger::MouseX2, true);
+        assert_eq!(take_recorded().map(|r| match r {
+            Recorded::Key(h) => h.to_string(),
+            _ => String::new(),
+        }), Some("Mouse5".into()));
+        on_input(Trigger::MouseX2, false);
+
+        start_recording();
+        on_input(Trigger::Key(VK_ESCAPE), true);
+        assert_eq!(take_recorded(), Some(Recorded::Cancelled));
+        on_input(Trigger::Key(VK_ESCAPE), false);
+        assert!(!is_recording());
+    }
+}

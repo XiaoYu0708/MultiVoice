@@ -1,0 +1,16 @@
+[package]
+name = "hotkeys"
+description = "MultiVoice 全域按鍵：按鍵名稱解析、低階鍵盤／滑鼠 hook（不攔截）、錄製模式"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]

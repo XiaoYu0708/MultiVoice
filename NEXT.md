@@ -24,8 +24,14 @@
 - `win.rs`：`is_admin`、`relaunch_as_admin`（`runas`）
 - 依賴：`windows-sys 0.59`（features 見該專案 `Cargo.toml`）
 
+### 進度
+- [x] `crates/hotkeys`：按鍵解析（`Hotkey` 實作 `FromStr`/`Display`，例 "Ctrl+F9"、"Mouse4"、"LAlt"）、
+  LL hook 執行緒（不攔截）、`Hotkey::held()`（多按其他修飾鍵也算）、錄製模式
+  （`start_recording` / `take_recorded`，Esc 取消、單按修飾鍵放開也算）、`event_count`、`is_admin`、`relaunch_as_admin`
+- [ ] 下一步從下面第 2 點（session）開始
+
 ### 建議設計
-1. **新 crate `hotkeys`**（或放在 `desktop/src/hotkeys.rs`，但 CLI 也可能要用，建議獨立 crate，只在 Windows 編譯）：
+1. **新 crate `hotkeys`**（已完成，見上）（或放在 `desktop/src/hotkeys.rs`，但 CLI 也可能要用，建議獨立 crate，只在 Windows 編譯）：
    - 專用執行緒安裝 LL hook，維護「目前按住的鍵」集合 → 寫入 `Arc<AtomicU64>` 或回呼
    - **不攔截按鍵**（`CallNextHookEx` 照常傳下去），遊戲也要收得到
    - 忽略 `LLKHF_INJECTED`？先不要忽略（有些人用巨集）；記在設定裡可選
