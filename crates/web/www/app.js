@@ -305,18 +305,27 @@ function drawPip() {
   g.fillText(names.length ? '說話中：' + names.join('、') : '沒人說話', 24, 200, canvas.width - 48);
 }
 
-$('#pip-btn').addEventListener('click', async () => {
+// Must request synchronously inside the tap: iOS rejects it after any await ("not triggered by a user activation")
+$('#pip-btn').addEventListener('click', () => {
   if (!pip) startPip();
+  const v = pip.video;
+  const fail = (ex) => log('無法開啟浮動視窗：' + (ex?.message || ex));
   try {
     if (pipActive()) {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else pip.video.webkitSetPresentationMode('inline');
-    } else {
-      await pip.video.play().catch(() => {});
-      if (pip.video.requestPictureInPicture) await pip.video.requestPictureInPicture();
-      else pip.video.webkitSetPresentationMode('picture-in-picture');
+      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(fail);
+      else v.webkitSetPresentationMode('inline');
+      return;
     }
-  } catch (ex) { log('無法開啟浮動視窗：' + (ex.message || ex)); }
+    if (v.paused) v.play().catch(() => {});
+    // Safari (iOS) has its own synchronous API; use the standard one elsewhere
+    if (typeof v.webkitSetPresentationMode === 'function' && v.webkitSupportsPresentationMode?.('picture-in-picture')) {
+      v.webkitSetPresentationMode('picture-in-picture');
+    } else if (v.requestPictureInPicture) {
+      v.requestPictureInPicture().catch(fail);
+    } else {
+      fail('這個瀏覽器不支援');
+    }
+  } catch (ex) { fail(ex); }
 });
 
 async function eventLoop(r) {
