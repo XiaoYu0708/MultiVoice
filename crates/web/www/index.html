@@ -69,12 +69,12 @@
     <div class="meter" aria-hidden="true"><div id="meter-fill"></div><div id="meter-gate"></div></div>
     <p id="mic-text" class="muted small">麥克風：—</p>
     <div id="pip-row" class="pip-row" hidden>
-      <button id="pip-btn" class="ghost" type="button">浮動視窗（實驗）</button>
+      <button id="pip-btn" class="ghost" type="button">開啟浮動視窗</button>
       <video id="pip-video" muted playsinline autopictureinpicture></video>
     </div>
-    <p id="pip-note" class="muted small" hidden>浮動視窗開著時切到遊戲，會試著保留麥克風（iPhone 能不能說話要實測）。
-      Safari 支援的話，切到其他 App 時會自動變成浮動視窗。</p>
-    <p id="ios-note" class="muted small" hidden>iPhone 鎖定螢幕或切到其他 App 時，Safari 不讓網頁收音，所以會先關掉麥克風、試著繼續播放其他人的聲音（實驗中，「音訊設定」可以換方式），回到這個頁面會自動開回麥克風。</p>
+    <p id="pip-note" class="muted small" hidden>浮動視窗開著時，切到遊戲或鎖定螢幕也能繼續說話和收聽；小視窗會顯示麥克風狀態與誰在說話。</p>
+    <p id="ios-note" class="warn small" hidden><b>iPhone 要在遊戲中說話：先按「開啟浮動視窗」，再切到遊戲。</b>
+      沒開浮動視窗就切走的話，Safari 不讓網頁收音，只能聽（回到這個頁面會自動開回麥克風）。</p>
     <p id="mic-warning" class="warn small" hidden><span id="mic-warning-text"></span>
       <button id="mic-retry" class="ghost" type="button" hidden>開啟麥克風</button></p>
   </section>
@@ -105,14 +105,14 @@
     <label class="check"><input id="cues" type="checkbox"> 開／關麥提示音</label>
     <label class="check"><input id="wakelock" type="checkbox"> 在房間裡時保持螢幕開啟（手機建議開）</label>
     <label id="bg-listen-row" class="field" hidden>
-      <span>iPhone 切到背景時（實驗）</span>
+      <span>iPhone 沒開浮動視窗就切到背景時</span>
       <select id="bgListen">
         <option value="1">繼續收聽：方式一</option>
         <option value="2">繼續收聽：方式二（經由媒體播放）</option>
         <option value="0">關閉</option>
       </select>
-      <small class="muted">切到背景時麥克風會先關掉，只試著繼續播放其他人的聲音；回到這個頁面會自動開回麥克風。
-        改了要離開房間再加入才生效。</small>
+      <small class="muted">麥克風會先關掉，只繼續播放其他人的聲音；回到這個頁面會自動開回麥克風。
+        要邊玩邊講請用浮動視窗。改了要離開房間再加入才生效。</small>
     </label>
     <p class="muted small" id="net-text"></p>
   </details>

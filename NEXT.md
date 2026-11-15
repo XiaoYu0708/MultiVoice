@@ -157,9 +157,9 @@
 - [x] 使用者回報（2026-11-16）：iPhone 鎖定或切到其他 App 時，麥克風指示燈仍亮但雙向都沒聲音——iOS Safari 在背景會暫停網頁音訊，網頁無法繞過（PLAN §8.2）。已改善：回到前景時自動恢復 AudioContext、麥克風被暫停／停掉就自動重開（不行才顯示按鈕）、iPhone 在房間畫面顯示說明、試用 `navigator.audioSession.type = 'play-and-record'`。要背景通話只能做原生 App
 - [ ] **iPhone 背景只收聽（實驗，待使用者實測）**：使用者可以接受背景時只聽不說。切到背景時放掉麥克風、`audioSession.type = 'playback'`，回到前景自動開回麥克風（`play-and-record`）。「音訊設定」可選方式一（Web Audio 直接播）或方式二（`MediaStreamDestination` → `<audio>`，走媒體播放）；網址加 `?ios` 可在其他瀏覽器測 iPhone 流程
 - [x] 使用者實測（2026-11-16）：iPhone 背景**收聽正常**（方式一）
-- [ ] **浮動視窗（子母畫面）實驗，待實測能不能說話**：房間畫面「浮動視窗」＝ canvas.captureStream → `<video autopictureinpicture>`，顯示麥克風狀態與誰在說話；浮動視窗開著時切到背景**不放掉麥克風**，看 iOS 會不會繼續收音
+- [x] **浮動視窗（子母畫面）**：使用者實測（2026-11-16）**iPhone 開浮動視窗後鎖定或切到其他 App，都能繼續說話和收聽**。做法：canvas.captureStream → `<video>`，顯示麥克風狀態與誰在說話；浮動視窗開著時切到背景不放掉麥克風。**一定要在按下的當下同步呼叫**（iOS 用 `webkitSetPresentationMode`；先 await 會被拒絕「not triggered by a user activation」），所以 `autopictureinpicture` 自動浮動在 iOS 沒用，要使用者先按按鈕。iPhone 上按鈕用醒目樣式並提示
 - [ ] 細項還沒回報：Android 背景（不同廠牌省電機制）、回到前景後是否自動恢復、喇叭回音、耗電
-- iPhone 原生 App：使用者沒有 Mac；要做只能用雲端 macOS（GitHub Actions）＋ Apple 開發者帳號（每年 99 美元）＋ TestFlight，暫不做
+- iPhone 原生 App：使用者沒有 Mac；浮動視窗已能邊玩邊講，暫不需要
 - [ ] Firefox：MediaStreamSource 接到 48 kHz 的 AudioContext 是否正常（裝置不是 48 kHz 時）
 - [ ] 網頁版的頻道左右定位、優先頻道（引擎已支援，UI 還沒放）
 - [ ] GitHub Pages 備援託管

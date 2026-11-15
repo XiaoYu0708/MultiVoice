@@ -232,7 +232,13 @@ function enterRoom() {
   voiceLoop(room);
   setWakeLock(settings.wakelock);
   $('#ios-note').hidden = !IOS;
-  if (pipSupported()) { $('#pip-row').hidden = false; $('#pip-note').hidden = false; startPip(); }
+  if (pipSupported()) {
+    $('#pip-row').hidden = false;
+    $('#pip-note').hidden = false;
+    // iPhone: the floating window is how you talk while gaming, so make it the obvious button
+    $('#pip-btn').className = IOS ? 'primary' : 'ghost';
+    startPip();
+  }
 }
 
 // ---------------------------------------------------------------- floating window (Picture-in-Picture)
@@ -263,7 +269,7 @@ function startPip() {
   video.play().catch(() => {});
   // timers keep running in the floating window; requestAnimationFrame would not
   pip.timer = setInterval(drawPip, 200);
-  const onChange = () => { $('#pip-btn').textContent = pipActive() ? '關閉浮動視窗' : '浮動視窗（實驗）'; };
+  const onChange = () => { $('#pip-btn').textContent = pipActive() ? '關閉浮動視窗' : '開啟浮動視窗'; };
   video.addEventListener('enterpictureinpicture', onChange);
   video.addEventListener('leavepictureinpicture', onChange);
   video.addEventListener('webkitpresentationmodechanged', onChange);
@@ -637,8 +643,8 @@ function setAudioSession(type) {
  */
 function enterBackground() {
   if (!IOS || !room || !ctx || settings.bgListen === 0) return;
-  // floating window open: keep the mic (experiment: can we still talk while in a game?)
-  if (pipActive()) { log('浮動視窗中：保留麥克風'); return; }
+  // floating window open: iOS keeps recording, so keep the mic (verified on iPhone 2026-11-16)
+  if (pipActive()) return;
   if (micStream) {
     micStream.getTracks().forEach((t) => t.stop());
     try { micSource?.disconnect(); } catch {}
