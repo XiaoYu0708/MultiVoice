@@ -32,6 +32,10 @@ pub struct Settings {
     pub presets: Vec<crate::presets::Preset>,
     /// 最近套用／儲存的設定檔（下次開啟時預先選好）
     pub last_preset: Option<String>,
+    /// 置頂的「誰在說話」小視窗
+    pub overlay: bool,
+    /// 小視窗位置："top_left" / "top_right" / "bottom_left" / "bottom_right"
+    pub overlay_corner: String,
 }
 
 impl Default for Settings {
@@ -50,6 +54,8 @@ impl Default for Settings {
             close_to_tray: true,
             presets: Vec::new(),
             last_preset: None,
+            overlay: true,
+            overlay_corner: "top_left".into(),
         }
     }
 }
