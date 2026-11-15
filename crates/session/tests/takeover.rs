@@ -337,7 +337,8 @@ async fn old_host_with_fewer_members_yields() -> Result<()> {
     wait_until("B 那邊三個人", || b_host.member_count() == 3).await;
     println!("舊房主讓位完成：{:?}", started.elapsed());
     assert!(b.t.host().is_some(), "B 不該讓位");
-    assert_eq!(room.host.member_count(), 0, "原房主停掉後沒有人");
+    // 停掉後成員是非同步移除的（舊連線還會保留一下：先建後拆），用等的
+    wait_until("原房主停掉後沒有人", || room.host.member_count() == 0).await;
     Ok(())
 }
 
