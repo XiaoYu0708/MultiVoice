@@ -1,0 +1,23 @@
+[package]
+name = "cli"
+description = "MultiVoice 命令列客戶端（M1：單頻道房主模式）"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "multivoice"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+audio = { version = "0.1.0", path = "../audio" }
+client-core = { version = "0.1.0", path = "../client-core" }
+host-core = { version = "0.1.0", path = "../host-core" }
+iroh = "1"
+mixer-core = { version = "0.1.0", path = "../mixer-core" }
+protocol = { version = "0.1.0", path = "../protocol" }
+rtrb = "0.4"
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+transport = { version = "0.1.0", path = "../transport" }

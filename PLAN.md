@@ -457,10 +457,14 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
 - [ ] Docker Desktop 內 UDP 的直連效果（決定 `headless-host` 放 Docker 還是 Windows 原生）
 
 ### M1：單頻道房主模式（1–2 週）
-- [ ] `protocol`、`host-core` 最小版本、`client-core` 加入流程（邀請票、Redirect）
-- [ ] CLI 版：一端建房當房主，其他端加入，單一頻道通話
-- [ ] jitter buffer + PLC + FEC
-- [ ] 從第一天就帶 `term`、`version`、`sender_idx` 欄位（為房主轉移鋪路）
+- [x] `protocol`：邀請票（`mv1` + base32）、加入挑戰／證明（blake3 keyed，綁定房間 ID、nonce 與成員 NodeId）、控制訊息、語音封包標頭
+- [x] `host-core` 最小版本、`client-core` 加入流程（邀請票、Redirect 跟隨）；同一 NodeId 重連沿用 `session_idx`
+- [x] `mixer-core`：自適應 jitter buffer（RFC 3550 式抖動估計、FEC/PLC、end-of-stream、過深跳過）+ 混音／柔性限幅
+- [x] `client-core/tests/room.rs`：同一行程內房主 + 成員的整合測試（關閉 relay、只走本機直連）
+- [x] CLI（`crates/cli`，執行檔 `multivoice`）：`host` / `join <邀請票>`，VAD 閘門（人聲機率 + 降噪後音量 + 300 ms hangover + 1 幀前補）
+  - 2026-11-15 本機兩個實例互通：加入 259 ms、直連、jitter buffer 穩定在 40 ms、0 FEC/PLC/欠載
+- [x] 從第一天就帶 `term`、`sender_idx` 欄位（為房主轉移鋪路）
+- [ ] 跨網路實測（需要第二台裝置）
 
 ### M2：核心功能：多頻道收聽／多頻道開麥（2 週）⭐
 - [ ] 訂閱多頻道、每頻道 `listen` / `talk_mode`

@@ -312,6 +312,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audio",
+ "client-core",
+ "host-core",
+ "iroh",
+ "mixer-core",
+ "protocol",
+ "rtrb",
+ "tokio",
+ "tracing-subscriber",
+ "transport",
+]
+
+[[package]]
 name = "client-core"
 version = "0.1.0"
 dependencies = [
