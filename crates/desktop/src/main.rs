@@ -6,6 +6,7 @@ mod presets;
 mod settings;
 mod style;
 mod tray;
+mod update;
 
 const TITLE: &str = "MultiVoice";
 

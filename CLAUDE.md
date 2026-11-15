@@ -16,7 +16,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   `%USERPROFILE%/.cargo/target-multivoice`，所以執行檔在：
   - `%USERPROFILE%\.cargo\target-multivoice\release\multivoice.exe`（桌面版）
   - `%USERPROFILE%\.cargo\target-multivoice\release\multivoice-cli.exe`（命令列版，除錯／自動測試用）
-- `.cargo/config.toml` 內容（若遺失要重建）：
+- `.cargo/config.toml` 內容（若遺失要重建；`%USERPROFILE%` 要換成實際的使用者資料夾，cargo 不會展開環境變數）：
   ```toml
   [build]
   target-dir = "%USERPROFILE%/.cargo/target-multivoice"
@@ -45,6 +45,15 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `netprobe` | M0 網路探測工具 |
 
 伺服器端基礎設施在 `deploy/`（Docker：Caddy + 自架 iroh-relay，`relay.xiaoyu0708.ip-ddns.com`）。
+
+## 版本控制與發佈
+- GitHub：`XiaoYu0708/MultiVoice`（**公開**儲存庫，分支 `master`）。文件不要寫入使用者的個人環境細節（使用者路徑、內網 IP、其他服務名稱）
+- 版本號在根目錄 `Cargo.toml` 的 `[workspace.package] version`（所有 crate 共用）
+- 發佈：`tools/release.sh 0.2.0 "更新說明"`（改版本 → 測試 → 建置 → commit + tag `v0.2.0` → push → `gh release create` 附上兩個 exe）。
+  **發佈前要先問使用者**（會公開執行檔）
+- 桌面版啟動時查 GitHub 最新 Release（`desktop/src/update.rs`），比目前版本新就在畫面上方提示；
+  測試提示列：環境變數 `MULTIVOICE_TEST_VERSION=0.0.1`
+- 協定版本（`protocol::PROTOCOL_VERSION`）不相容時要提高，並在發佈說明提醒大家一起更新
 
 ## 使用者的產品決定
 - 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵

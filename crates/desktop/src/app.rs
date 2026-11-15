@@ -10,6 +10,7 @@ use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkey
 use crate::presets;
 use crate::settings::Settings;
 use crate::tray::Tray;
+use crate::update;
 use crate::style::{AMBER, BLUE, GREEN, RED};
 
 pub struct App {
@@ -51,6 +52,10 @@ pub struct App {
     preset_new: Option<String>,
     /// 設定檔操作結果（顯示一段時間）
     preset_msg: Option<(String, Instant)>,
+    /// 背景檢查新版本的結果
+    update_rx: Option<mpsc::Receiver<Option<update::Release>>>,
+    /// 有新版本（使用者按「稍後」就清掉）
+    update: Option<update::Release>,
 }
 
 /// 正在設定 PTT 鍵的頻道（ID、名稱）
@@ -107,6 +112,8 @@ impl App {
             preset_sel: last_preset,
             preset_new: None,
             preset_msg: None,
+            update_rx: Some(update::spawn_check()),
+            update: None,
         }
     }
 
@@ -295,6 +302,7 @@ impl App {
         if self.profile != "default" {
             ui.weak(format!("身分設定檔：{}", self.profile));
         }
+        ui.weak(format!("版本 {}", update::current()));
     }
 
     fn audio_settings(&mut self, ui: &mut egui::Ui) {
@@ -458,6 +466,28 @@ impl App {
     }
 
     /// 一個頻道：名稱（右鍵改名／刪除）、加入／離開、我的說話與收聽設定、頻道成員
+    /// 有新版本時的提示列
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(r) = self.update.clone() else { return };
+        egui::Frame::group(ui.style()).fill(AMBER.gamma_multiply(0.25)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("有新版本 v{}", r.version)).strong().color(AMBER));
+                ui.weak(format!("（目前 v{}）", update::current()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("稍後").clicked() {
+                        self.update = None;
+                    }
+                    if ui.button("前往下載").clicked() {
+                        update::open_url(&r.url);
+                    }
+                });
+            });
+            ui.weak("房間裡的人版本不同時可能無法連線，建議大家一起更新");
+        });
+        ui.add_space(4.0);
+    }
+
     /// 設定檔列：選擇、套用、另存目前組合、刪除
     fn presets_bar(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         ui.horizontal(|ui| {
@@ -775,7 +805,14 @@ impl eframe::App for App {
         if let Some(snap) = &snap {
             egui::Panel::bottom("controls").show(ui, |ui| self.controls(ui, snap));
         }
+        if let Some(rx) = &self.update_rx
+            && let Ok(r) = rx.try_recv()
+        {
+            self.update = r;
+            self.update_rx = None;
+        }
         egui::CentralPanel::default().show(ui, |ui| {
+            self.update_banner(ui);
             ui.horizontal(|ui| {
                 ui.heading("MultiVoice");
                 if let Some(s) = &self.session {
@@ -795,6 +832,9 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         } else if self.session.is_some() || self.pending.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(80));
+        } else if self.update_rx.is_some() {
+            // 背景還在查新版本：結果出來時要重畫
+            ui.ctx().request_repaint_after(Duration::from_millis(500));
         }
     }
 }
