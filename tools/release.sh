@@ -31,7 +31,8 @@ taskkill //F //IM multivoice.exe >/dev/null 2>&1 || true
 cargo test --workspace
 cargo build --release -p desktop -p cli
 
-TARGET=$(cargo metadata --format-version 1 --no-deps | python -c "import json,sys; print(json.load(sys.stdin)['target_directory'])")
+# build 目錄（本機的 .cargo/config.toml 可能改過）；不用 python 解析，避免中文路徑的編碼問題
+TARGET=$(cargo metadata --format-version 1 --no-deps | grep -o '"target_directory":"[^"]*"' | sed 's/.*:"//; s/"$//; s/\\\\/\//g')
 mkdir -p dist
 cp "$TARGET/release/multivoice.exe" "$TARGET/release/multivoice-cli.exe" dist/
 
