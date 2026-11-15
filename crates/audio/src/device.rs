@@ -21,10 +21,14 @@ const NANOS_PER_SAMPLE: f64 = 1e9 / SAMPLE_RATE as f64;
 /// 串流的即時統計，由音訊回呼寫入、其他執行緒讀取。
 #[derive(Default)]
 pub struct StreamStats {
-    /// 裝置端延遲（µs）：輸入為 capture→callback，輸出為 callback→playback
+    /// 輸出裝置延遲（µs）：callback→預計播放時間。
+    /// 輸入端不提供：cpal/WASAPI 的 callback 時間取自 IAudioClock 的快取值，
+    /// 常常早於 GetBuffer 給的擷取時間，相減沒有意義（擷取時間本身是可靠的）。
     pub device_latency_us: AtomicU64,
     /// 輸入：環形緩衝滿而丟棄的取樣數；輸出：發生欠載的回呼次數
     pub xruns: AtomicU64,
+    /// 裝置回報的 xrun（WASAPI 資料不連續旗標）次數
+    pub device_xruns: AtomicU64,
     /// 自上次讀取以來的峰值（f32 bits；非負浮點數的 bit 順序與數值順序一致，可直接 fetch_max）
     peak_bits: AtomicU32,
     /// 回呼被呼叫的次數
@@ -42,12 +46,19 @@ impl StreamStats {
     }
 }
 
-/// 聲音起點偵測：從安靜（低於 `off` 持續 `rearm` 個取樣）後第一次超過 `on` 時，
+/// 聲音起點偵測（門檻隨底噪自動調整）：
+/// 包絡線低於 `底噪 × 3` 持續 200 ms 後，第一個超過 `max(底噪 × 6, 0.1)` 的取樣即為起點，
 /// 把該取樣的時間（ns，與 cpal StreamInstant 同一時鐘）送出。
 /// 用來量測端到端延遲：同一個拍手聲在輸入端與輸出端各被偵測一次，兩者相減即延遲。
 pub struct OnsetDetector {
-    on: f32,
-    off: f32,
+    /// 峰值包絡線（約 30 ms 衰減）
+    env: f32,
+    env_decay: f32,
+    /// 底噪估計：往下立即跟隨，往上緩慢爬升（前 0.5 秒時間常數 50 ms 以快速收斂，之後 1 秒）
+    floor: f32,
+    floor_rise_fast: f32,
+    floor_rise: f32,
+    warmup_left: u32,
     rearm: u32,
     quiet: u32,
     armed: bool,
@@ -56,10 +67,15 @@ pub struct OnsetDetector {
 
 impl OnsetDetector {
     pub fn new(out: rtrb::Producer<u64>) -> Self {
+        let sr = SAMPLE_RATE as f32;
         Self {
-            on: 0.2,
-            off: 0.02,
-            rearm: SAMPLE_RATE * 3 / 10, // 300 ms
+            env: 0.0,
+            env_decay: (-1.0 / (0.030 * sr)).exp(),
+            floor: 0.01,
+            floor_rise_fast: 1.0 / (0.05 * sr),
+            floor_rise: 1.0 / (1.0 * sr),
+            warmup_left: SAMPLE_RATE / 2,
+            rearm: SAMPLE_RATE / 5, // 200 ms
             quiet: 0,
             armed: false,
             out,
@@ -69,13 +85,24 @@ impl OnsetDetector {
     #[inline]
     fn feed(&mut self, s: f32, t_ns: u64) {
         let a = s.abs();
+        self.env = a.max(self.env * self.env_decay);
+        if self.env < self.floor {
+            self.floor = self.env.max(1e-4);
+        } else {
+            let k = if self.warmup_left > 0 { self.floor_rise_fast } else { self.floor_rise };
+            self.floor += (self.env - self.floor) * k;
+        }
+        self.warmup_left = self.warmup_left.saturating_sub(1);
+        let on = (self.floor * 6.0).max(0.1);
+        let off = (self.floor * 3.0).max(0.005);
+
         if self.armed {
-            if a >= self.on {
+            if a >= on {
                 let _ = self.out.push(t_ns);
                 self.armed = false;
                 self.quiet = 0;
             }
-        } else if a < self.off {
+        } else if self.env < off {
             self.quiet += 1;
             if self.quiet >= self.rearm {
                 self.armed = true;
@@ -151,15 +178,13 @@ where
 {
     let ch = config.channels as usize;
     let inv = 1.0 / ch as f32;
+    let on_error = error_handler(stats.clone(), "輸入");
     let stream = dev.build_input_stream(
         *config,
         move |data: &[T], info: &cpal::InputCallbackInfo| {
             let ts = info.timestamp();
             stats.callbacks.fetch_add(1, Ordering::Relaxed);
-            stats.device_latency_us.store(
-                ts.callback.duration_since(ts.capture).as_micros() as u64,
-                Ordering::Relaxed,
-            );
+            // capture = 這批資料第一個取樣的擷取時間（WASAPI GetBuffer 的 QPC 位置）
             let t0 = ts.capture.as_nanos() as f64;
             let mut peak = 0f32;
             let mut dropped = 0u64;
@@ -178,10 +203,21 @@ where
                 stats.xruns.fetch_add(dropped, Ordering::Relaxed);
             }
         },
-        |e| eprintln!("輸入串流錯誤：{e}"),
+        on_error,
         None,
     )?;
     Ok(stream)
+}
+
+/// xrun 只計數（串流剛啟動時 WASAPI 常回報一次），其他錯誤才印出來。
+fn error_handler(stats: Arc<StreamStats>, label: &'static str) -> impl FnMut(cpal::Error) + Send + 'static {
+    move |e: cpal::Error| {
+        if e.kind() == cpal::ErrorKind::Xrun {
+            stats.device_xruns.fetch_add(1, Ordering::Relaxed);
+        } else {
+            eprintln!("{label}串流錯誤：{e}");
+        }
+    }
 }
 
 /// 開啟輸出串流。`gain` 為輸出增益（0 = 靜音，用於不出聲的自動測試）。
@@ -218,6 +254,7 @@ where
     T: SizedSample + FromSample<f32>,
 {
     let ch = config.channels as usize;
+    let on_error = error_handler(stats.clone(), "輸出");
     let stream = dev.build_output_stream(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
@@ -251,8 +288,39 @@ where
                 stats.xruns.fetch_add(1, Ordering::Relaxed);
             }
         },
-        |e| eprintln!("輸出串流錯誤：{e}"),
+        on_error,
         None,
     )?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 在峰值約 -22 dBFS 的噪音中放兩下「拍手」，兩下都要在正確時間被偵測到
+    #[test]
+    fn onset_detector_finds_claps_in_noise() {
+        let (tx, mut rx) = rtrb::RingBuffer::<u64>::new(16);
+        let mut det = OnsetDetector::new(tx);
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut noise = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * 0.08
+        };
+        let sr = SAMPLE_RATE as usize;
+        let claps = [sr, sr * 2]; // 第 1 秒、第 2 秒
+        for i in 0..sr * 3 {
+            let mut s = noise();
+            if claps.iter().any(|&c| (c..c + 96).contains(&i)) {
+                s = if i % 2 == 0 { 0.8 } else { -0.8 };
+            }
+            det.feed(s, (i as f64 * NANOS_PER_SAMPLE) as u64);
+        }
+        let got: Vec<u64> = std::iter::from_fn(|| rx.pop().ok()).collect();
+        let want: Vec<u64> = claps.iter().map(|&c| (c as f64 * NANOS_PER_SAMPLE) as u64).collect();
+        assert_eq!(got, want, "偵測到的起點（ns）");
+    }
 }

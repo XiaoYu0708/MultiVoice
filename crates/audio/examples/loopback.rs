@@ -114,7 +114,10 @@ fn main() -> Result<(), device::Error> {
     let (_out_stream, out_ch) = device::open_output(
         &out_dev, out_cons, out_stats.clone(), Some(OnsetDetector::new(out_onset_tx)), o.gain)?;
 
-    println!("libopus {}", opus::version());
+    // audiopus_sys 以 cmake 編譯時沒有帶入版本字串，會顯示 "libopus unknown"（實際為內附的 1.3.1）
+    if !opus::version().contains("unknown") {
+        println!("{}", opus::version());
+    }
     println!("輸入：{}（{in_ch} ch）", device::device_name(&in_dev));
     println!("輸出：{}（{out_ch} ch）", device::device_name(&out_dev));
     println!(
@@ -214,28 +217,36 @@ fn main() -> Result<(), device::Error> {
                 }
                 if !warmed_up {
                     warmed_up = true;
-                    out_stats.xruns.store(0, Ordering::Relaxed);
-                    in_stats.xruns.store(0, Ordering::Relaxed);
+                    for st in [&in_stats, &out_stats] {
+                        st.xruns.store(0, Ordering::Relaxed);
+                        st.device_xruns.store(0, Ordering::Relaxed);
+                    }
                 }
             }
         }
 
-        // 4. 配對延遲量測：每個輸出起點，對應到它之前 1 秒內最早的輸入起點
+        // 4. 配對延遲量測：每個輸出起點，對應到「比它早至少 30 ms 的最近一個」輸入起點。
+        //    更早的輸入起點代表那一下在輸出端沒被偵測到，直接丟掉，避免配到下一下拍手。
         while let Ok(t) = in_onset_rx.pop() {
             in_onsets.push_back(t);
         }
+        const MIN_NS: u64 = 30_000_000; // 幀長 20 ms + 裝置緩衝，物理上不可能更短
+        const MAX_NS: u64 = 1_000_000_000;
         while let Ok(t_out) = out_onset_rx.pop() {
-            while in_onsets.front().is_some_and(|&t_in| t_out.saturating_sub(t_in) > 1_000_000_000) {
+            let mut best = None;
+            while let Some(&t_in) = in_onsets.front() {
+                if t_in + MIN_NS > t_out {
+                    break;
+                }
+                best = Some(t_in);
                 in_onsets.pop_front();
             }
-            if let Some(&t_in) = in_onsets.front() {
-                if t_in < t_out {
-                    in_onsets.pop_front();
-                    let ms = (t_out - t_in) as f64 / 1e6;
-                    latencies.push(ms);
-                    let avg = latencies.iter().sum::<f64>() / latencies.len() as f64;
-                    println!("  ▶ 端到端延遲 {ms:6.1} ms（平均 {avg:5.1} ms，n={}）", latencies.len());
-                }
+            if let Some(t_in) = best.filter(|&t| t_out - t <= MAX_NS) {
+                let ms = (t_out - t_in) as f64 / 1e6;
+                latencies.push(ms);
+                let mut v = latencies.clone();
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                println!("  ▶ 端到端延遲 {ms:6.1} ms（中位數 {:5.1} ms，n={}）", v[v.len() / 2], v.len());
             }
         }
 
@@ -244,9 +255,8 @@ fn main() -> Result<(), device::Error> {
             last_report = Instant::now();
             let kbps = ps.bytes as f64 * 8.0 / (ps.frames.max(1) as f64 * 0.02) / 1000.0;
             println!(
-                "麥克風 {} dBFS｜輸入裝置 {:4.1} ms｜輸出緩衝 {:4.1} ms｜輸出裝置 {:4.1} ms｜欠載 {}｜溢位 {}｜漂移修正 {}｜{:4.1} kbps｜掉包 {}（FEC {}，PLC {}）",
+                "麥克風 {} dBFS｜輸出緩衝 {:4.1} ms｜輸出裝置 {:4.1} ms｜欠載 {}｜溢位 {}｜漂移修正 {}｜{:4.1} kbps｜掉包 {}（FEC {}，PLC {}）",
                 dbfs(in_stats.take_peak()),
-                in_stats.device_latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
                 fill_of(&out_prod) as f64 * 1000.0 / SAMPLE_RATE as f64,
                 out_stats.device_latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
                 out_stats.xruns.load(Ordering::Relaxed),
@@ -263,11 +273,13 @@ fn main() -> Result<(), device::Error> {
 
     println!("\n=== 結果 ===");
     println!(
-        "幀數 {}｜編+解碼單幀最長 {} µs｜欠載 {}｜漂移修正 {}",
+        "幀數 {}｜編+解碼單幀最長 {} µs｜欠載 {}｜漂移修正 {}｜裝置 xrun：輸入 {} 輸出 {}",
         ps.frames,
         ps.codec_us_max,
         out_stats.xruns.load(Ordering::Relaxed),
-        ps.drift_drops
+        ps.drift_drops,
+        in_stats.device_xruns.load(Ordering::Relaxed),
+        out_stats.device_xruns.load(Ordering::Relaxed),
     );
     if latencies.is_empty() {
         println!("沒有量到延遲（沒有偵測到拍手等明顯的聲音起點）。");

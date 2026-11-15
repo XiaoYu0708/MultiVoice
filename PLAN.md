@@ -433,7 +433,10 @@ iroh 的 relay 只在打洞失敗時，以及網頁成員連線時使用。流�
 ## 10. 開發里程碑
 
 ### M0：技術驗證（1 週）
-- [ ] `audio`：麥克風 → Opus → 解碼 → 喇叭 本機迴路，量測延遲
+- [x] `audio`：麥克風 → Opus → 解碼 → 喇叭 本機迴路，量測延遲（`examples/loopback.rs`）
+  - 2026-11-15 實測（Seiren V3 Mini → Barracuda X，WASAPI shared，輸出緩衝 20 ms）：**端到端約 65 ms**（拍手起點從麥克風擷取到耳機播放，多次量測一致），20 秒內 0 欠載、0 漂移修正
+  - 未包含：無線耳機的 2.4 GHz 傳輸延遲（Windows 不知道這段）
+  - 可再壓低的地方：輸出緩衝目標 20 → 10 ms；WASAPI 輸出裝置延遲約 32 ms，可評估 IAudioClient3 低延遲模式或獨佔模式（M5）
 - [x] 確認 libopus 能在 `x86_64-pc-windows-gnu` 工具鏈下靜態編譯（2026-11-15：32 kbps 平均封包 82.7 bytes，release 版編+解碼每幀 0.32 ms）
 - [ ] iroh datagram：兩台不同網路的電腦互傳，分別量測直連與經 relay 的 RTT 和遺失率；測試公共 relay 長時間傳一路語音會不會被限流
 - [ ] iroh WASM 在 Chrome Android / iOS Safari 能否連上（只驗證連線）
