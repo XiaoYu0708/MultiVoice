@@ -57,6 +57,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
     -Out "<暫存區>\\shot.png" -WaitMs 6000 -Extra "--auto-join <票> --deafen"
   ```
   桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`
+  （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）
 - 測試會在 `%APPDATA%\MultiVoice\` 產生 `identity-<profile>.key`、`settings-<profile>.toml`，**測完要刪掉測試用的**（保留 `identity-default.key`、`identity-test2.key`、`settings.toml`）。
 - egui 字型是微軟正黑體，**沒有 emoji**（會顯示成方框），UI 不要用 emoji。
 

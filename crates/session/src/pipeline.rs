@@ -117,9 +117,10 @@ struct SlotInfo {
 pub struct Shared {
     /// 整個工作階段結束
     pub stop: AtomicBool,
-    pub muted: AtomicBool,
-    /// 拒聽：照常消耗 jitter buffer，只是輸出靜音（取消時不會冒出累積的舊聲音）
-    pub deafened: AtomicBool,
+    /// 使用者自己按的靜音（不含拒聽造成的）；要看實際有沒有送出用 [`Shared::is_muted`]
+    muted: AtomicBool,
+    /// 拒聽：不聽也不說。照常消耗 jitter buffer，只是輸出靜音（取消時不會冒出累積的舊聲音）
+    deafened: AtomicBool,
     pub tx_active: AtomicBool,
     // 進房後可即時調整的設定
     denoise: AtomicBool,
@@ -209,6 +210,33 @@ impl Shared {
         if mw.as_ref().map(|(k, _)| *k) != o.mute_key {
             *mw = o.mute_key.map(|k| (k, hotkeys::watch_presses(k)));
         }
+    }
+
+    /// 實際上是否不送出聲音：自己靜音，或拒聽中（拒聽一定連麥克風一起關）
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed) || self.deafened.load(Ordering::Relaxed)
+    }
+
+    pub fn is_deafened(&self) -> bool {
+        self.deafened.load(Ordering::Relaxed)
+    }
+
+    /// 設定靜音。取消靜音時若在拒聽中，連拒聽一起取消（否則按了也還是沒聲音）
+    pub fn set_muted(&self, v: bool) {
+        self.muted.store(v, Ordering::Relaxed);
+        if !v {
+            self.deafened.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// 設定拒聽。取消拒聽後，靜音回到拒聽前自己設定的狀態
+    pub fn set_deafened(&self, v: bool) {
+        self.deafened.store(v, Ordering::Relaxed);
+    }
+
+    /// 靜音鍵：目前沒聲音（靜音或拒聽）→ 全部打開；否則靜音
+    pub fn toggle_mute(&self) {
+        self.set_muted(!self.is_muted());
     }
 
     fn cue(&self, c: Cue) {
@@ -398,7 +426,7 @@ fn spawn_capture(
         let mut active = false;
         // 提示音用：上一幀按住的 PTT 頻道／廣播鍵、靜音狀態
         let (mut prev_ptt, mut prev_bc) = (0u64, false);
-        let mut prev_muted = shared.muted.load(Ordering::Relaxed);
+        let mut prev_muted = shared.is_muted();
         let running = || !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed);
         while running() {
             while let Ok(s) = ring.pop() {
@@ -431,10 +459,10 @@ fn spawn_capture(
                 // 全域靜音鍵：每按一次切換
                 if let Some((_, c)) = shared.mute_watch.lock().unwrap().as_ref() {
                     if c.swap(0, Ordering::Relaxed) % 2 == 1 {
-                        shared.muted.fetch_xor(true, Ordering::Relaxed);
+                        shared.toggle_mute();
                     }
                 }
-                let muted = shared.muted.load(Ordering::Relaxed);
+                let muted = shared.is_muted();
                 let ptt_held = shared
                     .ptt_keys
                     .lock()
@@ -585,7 +613,7 @@ fn spawn_playback(
                 mix_into_stereo(&mut mix, &voices[idx], g, r.pan);
             }
             let vol = load_f32(&shared.volume);
-            if shared.deafened.load(Ordering::Relaxed) {
+            if shared.is_deafened() {
                 mix.fill(0.0);
             } else if vol != 1.0 {
                 mix.iter_mut().for_each(|s| *s *= vol);
@@ -607,4 +635,34 @@ fn spawn_playback(
         }
     })?;
     Ok(h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deafen_also_mutes() {
+        let s = Shared::new();
+        s.set_deafened(true);
+        assert!(s.is_muted(), "拒聽 = 不聽也不說");
+        s.set_deafened(false);
+        assert!(!s.is_muted(), "取消拒聽：回到原本沒靜音");
+
+        s.set_muted(true);
+        s.set_deafened(true);
+        s.set_deafened(false);
+        assert!(s.is_muted(), "拒聽前就靜音：取消拒聽後仍靜音");
+
+        s.set_muted(false);
+        s.set_deafened(true);
+        s.set_muted(false);
+        assert!(!s.is_muted() && !s.is_deafened(), "拒聽中取消靜音：連拒聽一起取消");
+
+        s.set_deafened(true);
+        s.toggle_mute();
+        assert!(!s.is_muted() && !s.is_deafened(), "拒聽中按靜音鍵：全部打開");
+        s.toggle_mute();
+        assert!(s.is_muted() && !s.is_deafened());
+    }
 }

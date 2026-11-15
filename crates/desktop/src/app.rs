@@ -373,7 +373,9 @@ impl App {
                 dot(ui, color, snap.tx_active && !snap.muted);
                 ui.label(RichText::new(format!("{}（我）", snap.me.name)).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if snap.muted {
+                    if snap.deafened {
+                        ui.colored_label(RED, "已拒聽（麥克風也關閉）");
+                    } else if snap.muted {
                         ui.colored_label(RED, "已靜音");
                     } else if snap.tx_active {
                         ui.colored_label(GREEN, "送出中");
@@ -595,7 +597,9 @@ impl App {
                     .min_size(egui::vec2(w, 34.0));
                 if on { b.fill(RED.gamma_multiply(0.6)) } else { b }
             };
-            if ui.add(toggle(snap.muted, "已靜音", "靜音")).clicked() {
+            let mute = ui.add(toggle(snap.muted, "已靜音", "靜音"));
+            let mute = if snap.deafened { mute.on_hover_text("拒聽中麥克風也會關閉；按這裡會同時取消拒聽") } else { mute };
+            if mute.clicked() {
                 if let Some(s) = &self.session {
                     s.set_muted(!snap.muted);
                 }

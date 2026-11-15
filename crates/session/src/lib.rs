@@ -114,6 +114,7 @@ pub struct Snapshot {
     pub talking_to: Vec<String>,
     pub is_host: bool,
     pub ticket: String,
+    /// 實際上沒有送出聲音（自己靜音，或拒聽中）
     pub muted: bool,
     pub deafened: bool,
     pub tx_active: bool,
@@ -350,8 +351,8 @@ impl Session {
             talking_to: talking_to.iter().filter_map(|c| channel_names.get(c).cloned()).collect(),
             is_host: self.host.is_some(),
             ticket: self.ticket.to_string(),
-            muted: self.shared.muted.load(Ordering::Relaxed),
-            deafened: self.shared.deafened.load(Ordering::Relaxed),
+            muted: self.shared.is_muted(),
+            deafened: self.shared.is_deafened(),
             tx_active,
             mic_peak,
             mic_vad,
@@ -364,12 +365,14 @@ impl Session {
         }
     }
 
+    /// 見 [`Shared::set_muted`]：拒聽中取消靜音會一起取消拒聽
     pub fn set_muted(&self, v: bool) {
-        self.shared.muted.store(v, Ordering::Relaxed);
+        self.shared.set_muted(v);
     }
 
+    /// 拒聽同時關麥；取消後靜音回到原本的狀態
     pub fn set_deafened(&self, v: bool) {
-        self.shared.deafened.store(v, Ordering::Relaxed);
+        self.shared.set_deafened(v);
     }
 
     /// 進房後調整音訊設定。降噪、音量立即生效；換了裝置則重啟音訊（連線不中斷）。
