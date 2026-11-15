@@ -66,13 +66,15 @@ h3 { font-size: 1.05rem; }
 .field b { color: var(--fg); font-weight: 600; }
 input, textarea, select, button { font: inherit; color: inherit; }
 input:not([type]), textarea, select {
+  font-size: 16px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
   width: 100%;
 }
-textarea { resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; word-break: break-all; }
+/* 16px 以上：iPhone 的 Safari 點到字比較小的輸入框會自動放大畫面 */
+textarea { resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 16px; word-break: break-all; }
 input[type="range"] { width: 100%; accent-color: var(--blue); }
 input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--blue); }
 .check { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
