@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "nnnoiseless",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "session",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "client-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "audio",
@@ -1762,7 +1762,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "host-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "hotkeys"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "windows-sys 0.59.0",
 ]
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "mixer-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "moxcms"
@@ -2822,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "netprobe"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "iroh",
@@ -3749,7 +3749,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -4264,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "audio",
@@ -4949,7 +4949,7 @@ dependencies = [
 
 [[package]]
 name = "transport"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
