@@ -7,9 +7,6 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[workspace.dependencies]
-protocol = { path = "crates/protocol" }
-
 [profile.release]
 lto = true
 codegen-units = 1
