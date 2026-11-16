@@ -3,8 +3,9 @@
 #
 #   tools/release.sh 0.2.0 "這版的更新說明"
 #
-# 步驟：檢查工作目錄乾淨 → 改 Cargo.toml 版本 → 跑測試 → 建置 release → commit + tag + push
-#       → gh release create（附上 multivoice.exe、multivoice-cli.exe）
+# 步驟：檢查工作目錄乾淨 → 改 Cargo.toml 版本 → 跑測試 → commit + push → 建立 Release 草稿
+#       → 推送標籤 → GitHub Actions（.github/workflows/release.yml）用 MSVC 建置、附上兩個 exe、公開草稿
+# exe 不在這台電腦編：GNU 工具鏈編的比較容易被 Windows Defender 誤判。
 # 需要：gh 已登入、origin 指向 GitHub。
 set -euo pipefail
 
@@ -33,18 +34,28 @@ sed -i "s/^version = \".*\"/version = \"$VER\"/" Cargo.toml
 taskkill //F //IM multivoice.exe >/dev/null 2>&1 || true
 
 cargo test --workspace
-cargo build --release -p desktop -p cli
-
-# build 目錄（本機的 .cargo/config.toml 可能改過）；不用 python 解析，避免中文路徑的編碼問題
-TARGET=$(cargo metadata --format-version 1 --no-deps | grep -o '"target_directory":"[^"]*"' | sed 's/.*:"//; s/"$//; s/\\\\/\//g')
-mkdir -p dist
-cp "$TARGET/release/multivoice.exe" "$TARGET/release/multivoice-cli.exe" dist/
 
 git add Cargo.toml Cargo.lock
 git diff --cached --quiet || git commit -m "發佈 v$VER"
 trap - ERR
-git tag -a "v$VER" -m "v$VER"
-git push origin HEAD --follow-tags
+git push origin HEAD
 
-gh release create "v$VER" dist/multivoice.exe dist/multivoice-cli.exe --title "v$VER" --notes "$NOTES"
+# 先建草稿（客戶端查的是「最新公開版」，草稿看不到），exe 附上後由 Actions 公開
+gh release create "v$VER" --draft --target "$(git rev-parse HEAD)" --title "v$VER" --notes "$NOTES"
+git tag -a "v$VER" -m "v$VER"
+git push origin "v$VER"
+
+echo "等 GitHub Actions 建置…"
+RUN=""
+for _ in $(seq 30); do
+  sleep 5
+  RUN=$(gh run list --workflow release.yml --event push --branch "v$VER" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  [ -n "$RUN" ] && break
+done
+if [ -z "$RUN" ]; then
+  echo "找不到 v$VER 的建置；請到 GitHub Actions 查看。Release 目前是草稿" >&2
+  exit 1
+fi
+gh run watch "$RUN" --exit-status --interval 30
+gh release view "v$VER" --json isDraft,assets --jq '"草稿：" + (.isDraft|tostring), (.assets[] | .name + "  " + .digest)'
 echo "已發佈 v$VER"
