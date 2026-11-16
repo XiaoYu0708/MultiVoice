@@ -429,6 +429,7 @@ function openVolume(idx) {
   volTarget = name;
   $('#vol-name').textContent = `${name} 的音量`;
   $('#vol-range').value = Math.round(gainToPos(memberVolumes[name] ?? 1) * 1000);
+  paintRange($('#vol-range'));
   showVolume();
   $('#vol-pop').hidden = false;
 }
@@ -444,6 +445,7 @@ function setVolume(g) {
   else memberVolumes[volTarget] = Math.round(g * 100) / 100;
   store.set('memberVolumes', memberVolumes);
   $('#vol-range').value = Math.round(gainToPos(g) * 1000);
+  paintRange($('#vol-range'));
   showVolume();
   syncGains();
   renderRoom();
@@ -576,7 +578,7 @@ function updateCard(card, ch) {
   }));
   if (cfg) {
     if (document.activeElement !== card.mode) card.mode.value = cfg.mode;
-    if (document.activeElement !== card.vol) card.vol.value = cfg.volume;
+    if (document.activeElement !== card.vol) { card.vol.value = cfg.volume; paintRange(card.vol); }
     card.volVal.textContent = Math.round(cfg.volume * 100) + '%';
   }
 }
@@ -650,10 +652,17 @@ $('#mute-btn').addEventListener('click', () => {
 });
 $('#deafen-btn').addEventListener('click', () => { deafened = !deafened; renderToggles(); pushSettings(); });
 
+/** Sliders: the filled part of the track follows the value (style.css --fill) */
+function paintRange(el) {
+  const min = Number(el.min || 0), max = Number(el.max || 100);
+  el.style.setProperty('--fill', `${((Number(el.value) - min) / (max - min || 1)) * 100}%`);
+}
+document.addEventListener('input', (e) => { if (e.target instanceof HTMLInputElement && e.target.type === 'range') paintRange(e.target); });
+
 function bindSetting(id, key, fmt, apply) {
   const el = $('#' + id);
   const isCheck = el.type === 'checkbox';
-  if (isCheck) el.checked = settings[key]; else el.value = settings[key];
+  if (isCheck) el.checked = settings[key]; else { el.value = settings[key]; if (el.type === 'range') paintRange(el); }
   const show = () => { if (fmt) $('#' + id + '-val').textContent = fmt(settings[key]); };
   show();
   el.addEventListener(isCheck ? 'change' : 'input', () => {

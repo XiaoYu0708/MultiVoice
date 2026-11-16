@@ -11,7 +11,7 @@ use crate::presets;
 use crate::settings::Settings;
 use crate::tray::Tray;
 use crate::update;
-use crate::style::{AMBER, BLUE, GREEN, RED};
+use crate::style::{self, AMBER, BLUE, GREEN, RED};
 
 pub struct App {
     rt: tokio::runtime::Runtime,
@@ -418,8 +418,8 @@ impl App {
         ui.add_space(12.0);
         let busy = self.pending.is_some();
         let full_w = ui.available_width();
-        let big = |t: &str| egui::Button::new(RichText::new(t).size(17.0)).min_size(egui::vec2(full_w, 38.0));
-        if ui.add_enabled(name_ok && !busy, big("建立房間（我當房主）")).clicked() {
+        let big = egui::vec2(full_w, 42.0);
+        if style::primary_button(ui, name_ok && !busy, "建立房間（我當房主）", big).clicked() {
             self.start_host();
         }
         self.host_preset_picker(ui);
@@ -433,7 +433,7 @@ impl App {
                 .desired_width(f32::INFINITY),
         );
         let ticket_ok = protocol::ticket::clean_input(&self.ticket_input).starts_with("mv1");
-        if ui.add_enabled(name_ok && ticket_ok && !busy, big("加入房間")).clicked() {
+        if style::primary_button(ui, name_ok && ticket_ok && !busy, "加入房間", big).clicked() {
             self.start_join();
         }
 
@@ -484,7 +484,7 @@ impl App {
         ui.weak("每個頻道可以在頻道列表裡個別調整");
 
         ui.add_space(6.0);
-        ui.checkbox(&mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
+        style::toggle(ui, &mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
         if self.settings.denoise {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut self.settings.strong_denoise, false, "標準");
@@ -505,7 +505,7 @@ impl App {
                 .custom_formatter(|v, _| format!("{v:.0} dB")),
         );
         ui.weak("「偵測說話」模式下，聲音比門檻大才送出。背景吵時調高、講話常被切掉時調低");
-        ui.checkbox(&mut self.settings.agc, "自動音量（講話太小聲時自動放大、太大聲時壓低）");
+        style::toggle(ui, &mut self.settings.agc, "自動音量（講話太小聲時自動放大、太大聲時壓低）");
 
         ui.add_space(6.0);
         self.mic_test_ui(ui);
@@ -513,11 +513,11 @@ impl App {
         ui.add_space(8.0);
         ui.label(RichText::new("按鍵說話").strong());
         ui.weak("進房後在頻道的「說話」選「按鍵說話」設定按鍵；遊戲在前景時也有效");
-        ui.checkbox(&mut self.settings.cues, "開／關麥提示音");
+        style::toggle(ui, &mut self.settings.cues, "開／關麥提示音");
         if self.tray.is_some() {
-            ui.checkbox(&mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
+            style::toggle(ui, &mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
         }
-        ui.checkbox(&mut self.settings.allow_host, "房主離開或斷線時，可以由我接手當房主")
+        style::toggle(ui, &mut self.settings.allow_host, "房主離開或斷線時，可以由我接手當房主")
             .on_hover_text("網路很慢或電腦效能不好時可以關掉；下次進房才生效");
         if let Some(e) = &self.hotkey_err {
             ui.colored_label(RED, format!("按鍵說話無法使用：{e}"));
@@ -540,7 +540,7 @@ impl App {
             s.shared().set_user_gains(gains);
         }
         // 房間資訊與邀請票
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        style::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 // 不用 emoji：系統中文字型沒有 emoji，會顯示成方框
@@ -592,7 +592,7 @@ impl App {
 
         ui.add_space(6.0);
         // 自己：麥克風音量與目前送出的頻道
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        style::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let color = if !snap.has_mic {
@@ -700,7 +700,7 @@ impl App {
             } else if ui.button("開始測試").clicked() {
                 self.start_mic_test();
             }
-            ui.checkbox(&mut self.mic_monitor, "聽自己的聲音").on_hover_text("戴耳機時再開，用喇叭會產生回授");
+            style::toggle(ui, &mut self.mic_monitor, "聽自己的聲音").on_hover_text("戴耳機時再開，用喇叭會產生回授");
         });
         if let Some(e) = &self.mic_test_err {
             ui.colored_label(RED, e);
@@ -786,7 +786,7 @@ impl App {
                 Err(e) => self.install_err = Some(e),
             }
         }
-        egui::Frame::group(ui.style()).fill(AMBER.gamma_multiply(0.25)).show(ui, |ui| {
+        style::card(ui).fill(AMBER.gamma_multiply(0.25)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("有新版本 v{}", r.version)).strong().color(AMBER));
@@ -973,8 +973,8 @@ impl App {
         // 右鍵調整某位成員的音量：(名稱, 新倍率；None = 重設)
         let mut vol_change: Option<(String, Option<f32>)> = None;
         let volumes = self.settings.member_volumes.clone();
-        let fill = if joined { ui.visuals().faint_bg_color } else { ui.visuals().panel_fill };
-        egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+        let speaking = ch.members.iter().any(|m| m.speaking);
+        style::channel_card(ui, joined, speaking).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 if self.renaming.as_ref().is_some_and(|(id, _)| *id == ch.id) {
@@ -1027,7 +1027,7 @@ impl App {
             if let Some(mut cfg) = ch.mine {
                 let before = cfg;
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut cfg.listen, "收聽");
+                    style::toggle(ui, &mut cfg.listen, "收聽");
                     ui.label("說話");
                     egui::ComboBox::from_id_salt(("talk", ch.id))
                         .width(110.0)
@@ -1059,7 +1059,7 @@ impl App {
                             "中".into()
                         }
                     }));
-                    ui.checkbox(&mut cfg.mix.priority, "優先頻道（有人說話時壓低其他頻道）");
+                    style::toggle(ui, &mut cfg.mix.priority, "優先頻道（有人說話時壓低其他頻道）");
                 });
                 if cfg.talk != before.talk {
                     if cfg.talk == TalkMode::Ptt {
