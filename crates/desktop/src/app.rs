@@ -586,7 +586,9 @@ impl App {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let color = if snap.muted {
+                let color = if !snap.has_mic {
+                    Color32::GRAY
+                } else if snap.muted {
                     RED
                 } else if snap.tx_active {
                     GREEN
@@ -596,7 +598,9 @@ impl App {
                 dot(ui, color, snap.tx_active && !snap.muted);
                 ui.label(RichText::new(format!("{}（我）", snap.me.name)).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if snap.deafened {
+                    if !snap.has_mic {
+                        ui.colored_label(AMBER, "沒有麥克風，只能聽");
+                    } else if snap.deafened {
                         ui.colored_label(RED, "已拒聽（麥克風也關閉）");
                     } else if snap.muted {
                         ui.colored_label(RED, "已靜音");
@@ -609,7 +613,9 @@ impl App {
             let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
             let bar_color = if snap.muted { Color32::GRAY } else if db > -3.0 { AMBER } else { BLUE };
             ui.add(egui::ProgressBar::new(frac).desired_height(6.0).fill(bar_color));
-            if snap.talking_to.is_empty() {
+            if !snap.has_mic {
+                ui.weak("插上麥克風後會自動開啟，不用重新進房");
+            } else if snap.talking_to.is_empty() {
                 ui.weak("目前送出：—");
             } else {
                 ui.colored_label(GREEN, format!("目前送出：{}", snap.talking_to.join("、")));
@@ -1238,7 +1244,12 @@ impl eframe::App for App {
                 ui.heading("MultiVoice");
                 if let Some(s) = &self.session {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak(format!("麥克風：{}", short(&s.input_name())));
+                        let name = s.input_name();
+                        if name.is_empty() {
+                            ui.colored_label(AMBER, "沒有麥克風（只能聽）");
+                        } else {
+                            ui.weak(format!("麥克風：{}", short(&name)));
+                        }
                     });
                 }
             });

@@ -88,6 +88,8 @@ const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform 
 const MOBILE = IOS || /Android/i.test(navigator.userAgent);
 /** the user granted the mic once: try to bring it back automatically after the OS paused it */
 let micWanted = false;
+/** why there is no mic: '' | 'none' (no device) | 'denied' (no permission) | 'unsupported' (browser / not https) */
+let micProblem = '';
 
 async function startAudio() {
   // every join starts with the mic off (user preference, 2026-11-16); tap 「麥克風已關」 to talk
@@ -127,6 +129,11 @@ async function enableMic() {
   micStream = null;
   try { micSource?.disconnect(); } catch {}
   micSource = null;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    micProblem = 'unsupported';
+    showMicWarning('這個瀏覽器不能使用麥克風，只能聽。', false);
+    return;
+  }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
@@ -134,6 +141,7 @@ async function enableMic() {
     if (!ctx || !node) { stream.getTracks().forEach((t) => t.stop()); return; }
     micStream = stream;
     micWanted = true;
+    micProblem = '';
     // phones: keep talking after switching to a game or locking the screen (see startRtcKeepAlive)
     if (MOBILE) startRtcKeepAlive(stream.getAudioTracks()[0]);
     micSource = ctx.createMediaStreamSource(stream);
@@ -149,10 +157,22 @@ async function enableMic() {
     track?.addEventListener('mute', () => { if (micStream === stream) renderAudio(); });
     track?.addEventListener('unmute', () => { if (micStream === stream) renderAudio(); });
     showMicWarning('', false);
-  } catch {
-    showMicWarning('沒有麥克風權限，只能聽。', true);
+  } catch (e) {
+    // no microphone at all: listen only, and open it automatically when one is plugged in (devicechange)
+    if (e?.name === 'NotFoundError' || e?.name === 'OverconstrainedError' || e?.name === 'NotReadableError') {
+      micProblem = 'none';
+      showMicWarning('沒有偵測到麥克風，只能聽。插上麥克風後會自動開啟。', true);
+    } else {
+      micProblem = 'denied';
+      showMicWarning('沒有麥克風權限，只能聽。', true);
+    }
   }
+  renderAudio();
 }
+// a microphone was plugged in while listening without one
+navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+  if (ctx && node && !micStream && micProblem === 'none') enableMic();
+});
 
 function showMicWarning(text, retry) {
   $('#mic-warning-text').textContent = text;
@@ -166,6 +186,7 @@ function stopAudio() {
   micStream?.getTracks().forEach((t) => t.stop());
   micStream = null;
   micWanted = false;
+  micProblem = '';
   try { node?.disconnect(); } catch {}
   node = null;
   ctx?.close().catch(() => {});
@@ -591,7 +612,10 @@ function renderAudio() {
     const paused = ctx && ctx.state !== 'running';
     const micPaused = micStream?.getAudioTracks()[0]?.muted;
     $('#mic-text').textContent = paused ? '聲音暫停中（回到這個頁面就會恢復）'
-      : !micStream ? (micWanted ? '麥克風：已中斷' : '麥克風：沒有權限（只能聽）')
+      : !micStream ? (micWanted ? '麥克風：已中斷'
+        : micProblem === 'none' ? '沒有麥克風（只能聽）'
+        : micProblem === 'unsupported' ? '這個瀏覽器不能用麥克風（只能聽）'
+        : '麥克風：沒有權限（只能聽）')
       : micPaused ? '麥克風：系統暫停中'
       : muted || deafened ? '麥克風：已關閉'
       : st.active ? `送出中 → ${to.join('、')}` : st.voiced ? '偵測到說話' : '麥克風：安靜';
@@ -621,6 +645,8 @@ $('#mute-btn').addEventListener('click', () => {
   // un-muting while deafened also un-deafens (same as desktop)
   if (muted || deafened) { muted = false; deafened = false; } else muted = true;
   renderToggles(); pushSettings();
+  // turning the mic on without one: try to open it again (e.g. plugged in, or permission changed)
+  if (!muted && ctx && !micStream && micProblem !== 'unsupported') enableMic();
 });
 $('#deafen-btn').addEventListener('click', () => { deafened = !deafened; renderToggles(); pushSettings(); });
 

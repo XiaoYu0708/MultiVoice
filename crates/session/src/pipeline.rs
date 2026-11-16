@@ -16,6 +16,8 @@
 //! 裝置熱插拔（[`AudioRunner`]）：音訊串流放在專屬執行緒（cpal 串流不能跨執行緒，放在 UI 執行緒的話，
 //! 視窗縮到系統匣時就沒人處理），每秒檢查：串流出錯（裝置被拔掉）就重開；指定的裝置不見時先用系統預設，
 //! 插回來再切回去；設定為「系統預設」時，Windows 換了預設裝置就跟著換。
+//!
+//! 沒有麥克風（或打不開）也能進房只聽：只開耳機，不開擷取執行緒；之後插上麥克風會自動重開。
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -130,6 +132,8 @@ pub struct Shared {
     /// 拒聽：不聽也不說。照常消耗 jitter buffer，只是輸出靜音（取消時不會冒出累積的舊聲音）
     deafened: AtomicBool,
     pub tx_active: AtomicBool,
+    /// 目前有沒有麥克風（沒有就只能聽）
+    pub has_mic: AtomicBool,
     // 進房後可即時調整的設定
     denoise: AtomicBool,
     speech_mix: AtomicU32,
@@ -184,6 +188,7 @@ impl Shared {
             muted: AtomicBool::new(false),
             deafened: AtomicBool::new(false),
             tx_active: AtomicBool::new(false),
+            has_mic: AtomicBool::new(true),
             denoise: AtomicBool::new(true),
             speech_mix: AtomicU32::new(0.3f32.to_bits()),
             gate_dbfs: AtomicU32::new(DEFAULT_GATE_DBFS.to_bits()),
@@ -384,9 +389,11 @@ pub struct AudioHandle {
     pub output_name: String,
     in_stats: Arc<StreamStats>,
     out_stats: Arc<StreamStats>,
-    /// 指定的裝置找不到，暫時用系統預設
+    /// 指定的裝置找不到，暫時用系統預設（麥克風：系統預設也沒有時也算，插回來會重開）
     in_fallback: bool,
     out_fallback: bool,
+    /// 麥克風打不開的原因（None = 有麥克風）
+    pub in_error: Option<String>,
 }
 
 impl AudioHandle {
@@ -420,9 +427,6 @@ fn find_or_default(input: bool, name: Option<&str>) -> Result<(device::Device, b
 }
 
 pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<AudioHandle> {
-    let (in_dev, in_fallback) = find_or_default(true, o.input.as_deref())?;
-    let (out_dev, out_fallback) = find_or_default(false, o.output.as_deref())?;
-
     // 裝置的取樣率不一定是 48 kHz（例如 44.1 kHz 耳機）：環形緩衝裡是裝置取樣率，
     // 擷取／播放執行緒負責轉換
     // 測試用：MULTIVOICE_TEST_RATES=輸入,輸出（例如 44100,44100）強制用其他取樣率開裝置，
@@ -432,44 +436,77 @@ pub fn start(client: Client, shared: Arc<Shared>, o: &AudioOpts) -> Result<Audio
         .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
         .unwrap_or_default();
     let (force_in, force_out) = (forced.first().copied(), forced.get(1).copied());
-    let in_rate = match force_in {
-        Some(r) => r,
-        None => device::default_rate(&in_dev, true).map_err(anyhow::Error::from_boxed)?,
-    };
+    // 測試用：MULTIVOICE_TEST_NO_MIC=1 假裝沒有麥克風
+    let no_mic_test = std::env::var_os("MULTIVOICE_TEST_NO_MIC").is_some();
+
+    // 麥克風可有可無：打不開就只聽。
+    // 記下試過的裝置名稱：裝置在但打不開時，熱插拔檢查不會每秒重開（會打斷耳機的聲音）
+    let in_stats = Arc::new(StreamStats::default());
+    let mut input_name = String::new();
+    let mut in_fallback = o.input.is_some();
+    let input = (|| -> Result<_> {
+        if no_mic_test {
+            // 記成目前的預設裝置，熱插拔檢查才不會一直重開
+            input_name = device::default_device_name(true).unwrap_or_default();
+            in_fallback = false;
+            anyhow::bail!("找不到預設音訊裝置（測試）");
+        }
+        let (dev, fb) = find_or_default(true, o.input.as_deref())?;
+        input_name = device::device_name(&dev);
+        in_fallback = fb;
+        let rate = match force_in {
+            Some(r) => r,
+            None => device::default_rate(&dev, true).map_err(anyhow::Error::from_boxed)?,
+        };
+        let (prod, cons) = rtrb::RingBuffer::<f32>::new(rate.max(SAMPLE_RATE) as usize / 5); // 200 ms
+        let (stream, _) =
+            device::open_input(&dev, prod, in_stats.clone(), None, force_in).map_err(anyhow::Error::from_boxed)?;
+        Ok((stream, cons, rate))
+    })();
+
+    let (out_dev, out_fallback) = find_or_default(false, o.output.as_deref())?;
     let out_rate = match force_out {
         Some(r) => r,
         None => device::default_rate(&out_dev, false).map_err(anyhow::Error::from_boxed)?,
     };
-    let in_cap = in_rate.max(SAMPLE_RATE) as usize / 5; // 200 ms
     let out_cap = out_rate.max(SAMPLE_RATE) as usize / 5;
-    let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(in_cap);
     // 輸出為左右交錯的立體聲
     let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(out_cap * 2);
-
-    let in_stats = Arc::new(StreamStats::default());
     shared.out_stats.failed.store(false, Ordering::Relaxed);
-    let (in_stream, _) = device::open_input(&in_dev, in_prod, in_stats.clone(), None, force_in)
-        .map_err(anyhow::Error::from_boxed)?;
     let (out_stream, _) = device::open_output(&out_dev, out_cons, shared.out_stats.clone(), None, 1.0, force_out)
         .map_err(anyhow::Error::from_boxed)?;
 
     shared.apply(o);
     let stop = Arc::new(AtomicBool::new(false));
-    let threads = vec![
-        spawn_capture(client, shared.clone(), stop.clone(), in_cons, o.bitrate, in_rate)?,
-        spawn_playback(shared.clone(), stop.clone(), out_prod, out_cap, o.buffer_ms, out_rate)?,
-    ];
+    let mut streams: Vec<Box<dyn std::any::Any>> = vec![Box::new(out_stream)];
+    let mut threads = vec![spawn_playback(shared.clone(), stop.clone(), out_prod, out_cap, o.buffer_ms, out_rate)?];
+    let in_error = match input {
+        Ok((stream, cons, rate)) => {
+            streams.push(Box::new(stream));
+            threads.push(spawn_capture(client, shared.clone(), stop.clone(), cons, o.bitrate, rate)?);
+            None
+        }
+        Err(e) => {
+            shared.tx_active.store(false, Ordering::Relaxed);
+            shared.tx_mask.store(0, Ordering::Relaxed);
+            store_f32(&shared.mic_peak, 0.0);
+            store_f32(&shared.mic_vad, 0.0);
+            Some(format!("{e:#}"))
+        }
+    };
+    shared.has_mic.store(in_error.is_none(), Ordering::Relaxed);
 
     Ok(AudioHandle {
-        streams: vec![Box::new(in_stream), Box::new(out_stream)],
+        streams,
         stop,
         threads,
-        input_name: device::device_name(&in_dev),
+        input_name,
         output_name: device::device_name(&out_dev),
         in_stats,
         out_stats: shared.out_stats.clone(),
         in_fallback,
         out_fallback,
+        in_error,
     })
 }
 
@@ -563,8 +600,11 @@ impl Owner {
         self.h = None;
         self.last_try = Instant::now();
         let h = start(self.client.clone(), self.shared.clone(), &self.opts)?;
-        *self.names.lock().unwrap() = (h.input_name.clone(), h.output_name.clone());
-        if h.in_fallback {
+        let input = if h.in_error.is_some() { String::new() } else { h.input_name.clone() };
+        *self.names.lock().unwrap() = (input, h.output_name.clone());
+        if let Some(e) = &h.in_error {
+            (self.log)(format!("沒有可用的麥克風，只能收聽（插上麥克風後會自動開啟）：{e}"));
+        } else if h.in_fallback {
             (self.log)(format!("找不到麥克風「{}」，暫時改用系統預設", self.opts.input.as_deref().unwrap_or_default()));
         }
         if h.out_fallback {
@@ -616,7 +656,7 @@ impl Owner {
             Some(h) if h.failed() => Some("音訊裝置中斷".into()),
             Some(h) => {
                 let changed = |input: bool, want: &Option<String>, cur: &str, fallback: bool| match want {
-                    // 跟著系統預設：預設換了
+                    // 跟著系統預設：預設換了（沒有麥克風時 cur 是空的：插上就重開）
                     None => device::default_device_name(input).is_some_and(|d| d != cur),
                     // 指定的裝置插回來了
                     Some(name) => fallback && device::has_device(input, name),
@@ -635,6 +675,7 @@ impl Owner {
         match self.open() {
             Ok(()) => {
                 let (i, o) = self.names.lock().unwrap().clone();
+                let i = if i.is_empty() { "沒有".into() } else { i };
                 (self.log)(format!("{}，已重新開啟（麥克風：{i}｜耳機：{o}）", if was_down { "音訊裝置恢復" } else { &reason }));
             }
             Err(e) => {

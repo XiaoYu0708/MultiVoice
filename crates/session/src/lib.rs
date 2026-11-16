@@ -143,6 +143,8 @@ pub struct Snapshot {
     pub muted: bool,
     pub deafened: bool,
     pub tx_active: bool,
+    /// 有麥克風（沒有就只能聽）
+    pub has_mic: bool,
     pub mic_peak: f32,
     pub mic_vad: f32,
     /// (是否經 relay, QUIC RTT ms)
@@ -492,6 +494,7 @@ impl Session {
             muted: self.shared.is_muted(),
             deafened: self.shared.is_deafened(),
             tx_active,
+            has_mic: self.shared.has_mic.load(Ordering::Relaxed),
             mic_peak,
             mic_vad,
             path: self.client.path(),

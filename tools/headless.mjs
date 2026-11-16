@@ -1,11 +1,12 @@
 // Headless Chrome test runner for the web client (no extension needed).
 //
-//   node tools/headless.mjs <url> [seconds] [--shot out.png] [--eval "js expr"] [--mobile] [--size WxH]
+//   node tools/headless.mjs <url> [seconds] [--shot out.png] [--eval "js expr"] [--mobile] [--size WxH] [--no-mic]
 //
 // - Prints the page's console output and uncaught exceptions to stdout
 // - Fake microphone (Chrome's built-in beep) and auto-granted permissions, autoplay allowed
 // - --eval runs the expression after <seconds> and prints the result (JSON); --eval sleep:N waits N seconds
 // - --shot saves a screenshot after <seconds>
+// - --no-mic: getUserMedia fails with NotFoundError (a computer without a microphone)
 // Uses a throwaway profile directory; Chrome is killed at the end.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
@@ -19,6 +20,7 @@ const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1
 const shot = opt('--shot');
 const evals = args.flatMap((a, i) => (a === '--eval' ? [args[i + 1]] : []));
 const mobile = args.includes('--mobile');
+const noMic = args.includes('--no-mic');
 const size = opt('--size')?.split('x').map(Number); // e.g. --size 512x512 (CSS px, scale 1)
 
 const candidates = [
@@ -28,7 +30,7 @@ const candidates = [
 ].filter(Boolean);
 const chrome = candidates.find((p) => existsSync(p));
 if (!url || !chrome) {
-  console.error('usage: node tools/headless.mjs <url> [seconds] [--shot out.png] [--eval expr] [--mobile]');
+  console.error('usage: node tools/headless.mjs <url> [seconds] [--shot out.png] [--eval expr] [--mobile] [--no-mic]');
   process.exit(2);
 }
 
@@ -82,6 +84,12 @@ await send('Runtime.enable');
 await send('Log.enable');
 if (mobile) await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 if (size) await send('Emulation.setDeviceMetricsOverride', { width: size[0], height: size[1], deviceScaleFactor: 1, mobile: false });
+if (noMic) {
+  await send('Page.enable');
+  await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: "navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('Requested device not found', 'NotFoundError'));",
+  });
+}
 await send('Page.navigate', { url });
 await sleep(seconds * 1000);
 for (const e of evals) {
