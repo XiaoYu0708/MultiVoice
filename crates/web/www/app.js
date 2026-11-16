@@ -57,7 +57,7 @@ $('#join-form').addEventListener('submit', async (e) => {
   const ticket = $('#ticket').value.trim().replace(/^.*#/, '');
   const err = mv.check_ticket(ticket);
   if (!name) return showJoinError('請輸入名稱');
-  if (err) return showJoinError('邀請票格式錯誤：' + err);
+  if (err) return showJoinError('邀請連結格式錯誤：' + err);
   store.set('name', name);
   $('#join-btn').disabled = true;
   $('#join-btn').textContent = '連線中…';
