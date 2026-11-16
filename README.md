@@ -12,7 +12,10 @@
 
 ## 下載與使用
 
-1. 到 [Releases](https://github.com/XiaoYu0708/MultiVoice/releases/latest) 下載 `multivoice.exe`，直接執行（不需安裝）
+1. 到 [Releases](https://github.com/XiaoYu0708/MultiVoice/releases/latest) 下載：
+   - `MultiVoice-Setup.exe`：安裝程式（裝在自己的使用者資料夾、不需要系統管理員權限；有開始功能表捷徑，可以從「設定 → 應用程式」解除安裝）
+   - 或 `multivoice.exe`：免安裝，直接執行
+   - 兩種都會在有新版時提示、一鍵更新
    - 執行檔沒有數位簽章，Windows 可能會跳出 SmartScreen 警告，按「其他資訊 → 仍要執行」
    - Windows Defender 也可能把它當成病毒擋下來，詳見下方〈[被 Windows Defender 擋下來？](#被-windows-defender-擋下來)〉
 2. 一個人按「建立房間」，把「複製邀請票」得到的 `mv1…` 文字傳給朋友

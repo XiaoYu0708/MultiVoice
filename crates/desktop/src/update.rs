@@ -211,6 +211,9 @@ pub fn cleanup_old() {
     if !old.exists() {
         return;
     }
+    // 剛更新完：用安裝程式裝的話，「應用程式」清單上的版本也跟著改
+    #[cfg(windows)]
+    sync_installed_version(&exe);
     let _ = std::thread::Builder::new().name("update-cleanup".into()).spawn(move || {
         for _ in 0..20 {
             if std::fs::remove_file(&old).is_ok() || !old.exists() {
@@ -219,6 +222,41 @@ pub fn cleanup_old() {
             std::thread::sleep(Duration::from_millis(500));
         }
     });
+}
+
+/// 安裝程式（installer/multivoice.iss）登記的解除安裝資訊；AppId 要跟 .iss 一致
+#[cfg(windows)]
+const UNINSTALL_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{6C1C7E0B-3F2A-4E8B-9B57-5D1A2C9E4F31}_is1";
+
+/// 這個 exe 是安裝程式裝的（跟登記的安裝位置相同）就把登記的版本改成目前版本
+#[cfg(windows)]
+fn sync_installed_version(exe: &Path) {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
+        RegSetValueExW,
+    };
+    let w = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let mut key: HKEY = std::ptr::null_mut();
+    let path = w(UNINSTALL_KEY);
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &mut key) } != 0 {
+        return;
+    }
+    let mut buf = [0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    let name = w("InstallLocation");
+    let ok = unsafe {
+        RegQueryValueExW(key, name.as_ptr(), std::ptr::null(), std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
+    } == 0;
+    let location = String::from_utf16_lossy(&buf[..(len as usize / 2).min(buf.len())]);
+    let location = location.trim_end_matches('\0').trim_end_matches('\\');
+    let same = exe.parent().is_some_and(|d| d.to_string_lossy().eq_ignore_ascii_case(location));
+    if ok && same {
+        let v = w(env!("CARGO_PKG_VERSION"));
+        let name = w("DisplayVersion");
+        unsafe { RegSetValueExW(key, name.as_ptr(), 0, REG_SZ, v.as_ptr().cast(), (v.len() * 2) as u32) };
+    }
+    unsafe { RegCloseKey(key) };
 }
 
 /// 用新的執行檔重新啟動：保留 `--profile`；`rejoin` = 重新啟動後自動加入這張邀請票的房間
