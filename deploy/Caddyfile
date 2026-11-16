@@ -16,6 +16,12 @@ relay.xiaoyu0708.ip-ddns.com {
 	reverse_proxy https://iroh-relay:8443 {
 		transport http {
 			tls_server_name relay.xiaoyu0708.ip-ddns.com
+			# 不保留閒置的上游連線：iroh-relay 規定每條連線要在接受後 30 秒內升級成 relay 連線
+			# （ESTABLISH_TIMEOUT，不會因為有流量而重算），否則記一筆 ERROR
+			# 「Connection did not reach established state within timeout」。
+			# 客戶端測延遲的 /ping 等一般請求若共用 Caddy 留著的連線，30 秒後就會被這樣切掉。
+			# WebSocket（/relay）升級後是獨立的長連線，不受影響
+			keepalive off
 		}
 	}
 }
