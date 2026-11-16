@@ -5,6 +5,7 @@
 #
 # 步驟：檢查工作目錄乾淨 → 改 Cargo.toml 版本 → 跑測試 → commit + push → 建立 Release 草稿
 #       → 推送標籤 → GitHub Actions（.github/workflows/release.yml）用 MSVC 建置、附上兩個 exe、公開草稿
+#       → 重新編譯並部署網頁版（tools/build-web.sh --deploy）
 # exe 不在這台電腦編：GNU 工具鏈編的比較容易被 Windows Defender 誤判。
 # 需要：gh 已登入、origin 指向 GitHub。
 set -euo pipefail
@@ -59,3 +60,12 @@ fi
 gh run watch "$RUN" --exit-status --interval 30
 gh release view "v$VER" --json isDraft,assets --jq '"草稿：" + (.isDraft|tostring), (.assets[] | .name + "  " + .digest)'
 echo "已發佈 v$VER"
+
+# 網頁版也用新的版本號重新編譯並部署（否則網頁版還顯示舊版本）；失敗不影響已公開的 Release
+echo "部署網頁版…"
+if bash tools/build-web.sh --deploy; then
+  echo "網頁版已部署 v$VER"
+else
+  echo "網頁版部署失敗：Release 已公開，請手動跑 tools/build-web.sh --deploy" >&2
+  exit 1
+fi
