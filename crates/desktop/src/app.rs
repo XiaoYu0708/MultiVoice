@@ -56,16 +56,16 @@ pub struct App {
     preset_new: Option<String>,
     /// 設定檔操作結果（顯示一段時間）
     preset_msg: Option<(String, Instant)>,
-    /// 正在輸入「存成頻道模板」的名稱
-    template_new: Option<String>,
-    /// 大廳：正在改名的頻道模板（輸入中的新名稱）
-    template_renaming: Option<String>,
-    /// 大廳：按了一次「刪除」的模板與時間（3 秒內再按一次才刪）
-    template_confirm_delete: Option<(String, Instant)>,
-    /// 模板改名失敗等訊息
-    template_err: Option<String>,
-    /// 開房連線完成後要建立的頻道模板
-    host_template: Option<presets::RoomTemplate>,
+    /// 大廳：正在改名的設定檔（輸入中的新名稱）
+    preset_renaming: Option<String>,
+    /// 按了一次「刪除」的設定檔與時間（3 秒內再按一次才刪）
+    preset_confirm_delete: Option<(String, Instant)>,
+    /// 設定檔改名失敗等訊息
+    preset_err: Option<String>,
+    /// 開房連線完成後要套用的設定檔
+    host_apply: Option<String>,
+    /// 套用中的設定檔：房主要先建立缺少的頻道，等頻道出現再套用
+    pending_apply: Option<PendingApply>,
     /// 背景檢查新版本的結果
     update_rx: Option<mpsc::Receiver<Option<update::Release>>>,
     /// 有新版本（使用者按「稍後」就清掉）
@@ -144,11 +144,11 @@ impl App {
             preset_sel: last_preset,
             preset_new: None,
             preset_msg: None,
-            template_new: None,
-            host_template: None,
-            template_renaming: None,
-            template_confirm_delete: None,
-            template_err: None,
+            preset_renaming: None,
+            preset_confirm_delete: None,
+            preset_err: None,
+            host_apply: None,
+            pending_apply: None,
             update_rx: Some(update::spawn_check()),
             update: None,
             install: None,
@@ -246,7 +246,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let (profile, name) = (self.profile.clone(), self.settings.name.trim().to_string());
         let can_host = self.settings.allow_host;
-        self.host_template = self.selected_template().cloned();
+        self.host_apply = self.host_preset().map(|p| p.name.clone());
         self.rt.spawn(async move {
             let _ = tx.send(session::host_room(&profile, &name, Relays::Default, can_host).await);
         });
@@ -257,7 +257,7 @@ impl App {
     fn start_join(&mut self) {
         let ticket = protocol::ticket::clean_input(&self.ticket_input);
         self.settings.last_ticket = ticket.clone();
-        self.host_template = None;
+        self.host_apply = None;
         let (tx, rx) = mpsc::channel();
         let (profile, name) = (self.profile.clone(), self.settings.name.trim().to_string());
         let can_host = self.settings.allow_host;
@@ -278,7 +278,7 @@ impl App {
         };
         self.pending = None;
         self.mic_test = None;
-        let template = self.host_template.take();
+        let host_apply = self.host_apply.take();
         match result.and_then(|c| Session::start(c, &self.settings.audio_opts(), self.rt.handle())) {
             Ok(s) => {
                 if self.start_deafened {
@@ -290,17 +290,8 @@ impl App {
                 {
                     let _ = s.set_channel(DEFAULT_CHANNEL, Some(join_cfg(&self.settings, &s, &lobby.name)));
                 }
-                // 開房時選了頻道模板：建立房間裡還沒有的頻道（依模板順序，頻道 ID 遞增所以順序不變）
-                if let Some(t) = template {
-                    let snap = s.snapshot();
-                    if snap.is_host {
-                        let missing = presets::template_missing(&t, snap.channels.iter().map(|c| c.name.as_str()));
-                        for n in &missing {
-                            s.create_channel(n);
-                        }
-                        self.preset_msg = Some((format!("已依模板「{}」建立 {} 個頻道", t.name, missing.len()), Instant::now()));
-                    }
-                }
+                // 開房時選了設定檔：建好頻道後套用（drive_pending_apply）
+                self.pending_apply = host_apply.map(PendingApply::new);
                 if let Some(t) = &self.tray {
                     t.set_session(Some(s.shared()));
                 }
@@ -321,27 +312,27 @@ impl App {
         }
     }
 
-    /// 設定裡選好的頻道模板（找不到就是不用）
-    fn selected_template(&self) -> Option<&presets::RoomTemplate> {
-        let n = self.settings.last_template.as_ref()?;
-        self.settings.room_templates.iter().find(|t| &t.name == n)
+    /// 開房時要套用的設定檔（找不到就是不用）
+    fn host_preset(&self) -> Option<&presets::Preset> {
+        let n = self.settings.host_preset.as_ref()?;
+        self.settings.presets.iter().find(|p| &p.name == n)
     }
 
-    /// 大廳：開房要用哪個頻道模板（有存過模板才顯示）
-    fn template_picker(&mut self, ui: &mut egui::Ui) {
-        if self.settings.room_templates.is_empty() {
+    /// 大廳：開房時套用哪個設定檔，也在這裡改名、刪除（有存過設定檔才顯示）
+    fn host_preset_picker(&mut self, ui: &mut egui::Ui) {
+        if self.settings.presets.is_empty() {
             return;
         }
-        if self.selected_template().is_none() {
-            self.settings.last_template = None;
+        if self.host_preset().is_none() {
+            self.settings.host_preset = None;
         }
         const NONE: &str = "不使用（只有大廳）";
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label("頻道模板");
-            let sel = self.settings.last_template.clone();
+            ui.label("開房設定檔");
+            let sel = self.settings.host_preset.clone();
             // 改名中：選單換成輸入框
-            if let (Some(old), Some(text)) = (&sel, &mut self.template_renaming) {
+            if let (Some(old), Some(text)) = (&sel, &mut self.preset_renaming) {
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
                 r.request_focus();
                 let mut done = None;
@@ -351,53 +342,71 @@ impl App {
                     done = Some(false);
                 }
                 match done {
-                    Some(true) => match presets::rename_template(&mut self.settings.room_templates, old, text) {
+                    Some(true) => match presets::rename(&mut self.settings.presets, old, text) {
                         Ok(()) => {
-                            self.settings.last_template = Some(text.trim().to_string());
-                            self.template_renaming = None;
-                            self.template_err = None;
+                            let new = text.trim().to_string();
+                            for n in [&mut self.settings.last_preset, &mut self.preset_sel] {
+                                if n.as_ref() == Some(old) {
+                                    *n = Some(new.clone());
+                                }
+                            }
+                            self.settings.host_preset = Some(new);
+                            self.preset_renaming = None;
+                            self.preset_err = None;
                         }
-                        Err(e) => self.template_err = Some(e.into()),
+                        Err(e) => self.preset_err = Some(e.into()),
                     },
                     Some(false) => {
-                        self.template_renaming = None;
-                        self.template_err = None;
+                        self.preset_renaming = None;
+                        self.preset_err = None;
                     }
                     None => {}
                 }
                 return;
             }
-            let names: Vec<String> = self.settings.room_templates.iter().map(|t| t.name.clone()).collect();
+            let names: Vec<String> = self.settings.presets.iter().map(|p| p.name.clone()).collect();
             let text = sel.clone().unwrap_or_else(|| NONE.into());
-            egui::ComboBox::from_id_salt("template").width(170.0).selected_text(text).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.settings.last_template, None, NONE);
+            egui::ComboBox::from_id_salt("host_preset").width(170.0).selected_text(text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.settings.host_preset, None, NONE);
                 for n in &names {
-                    ui.selectable_value(&mut self.settings.last_template, Some(n.clone()), n);
+                    ui.selectable_value(&mut self.settings.host_preset, Some(n.clone()), n);
                 }
             });
             let Some(n) = sel else { return };
-            if ui.small_button("改名").on_hover_text("幫這個頻道模板改名").clicked() {
-                self.template_renaming = Some(n.clone());
-                self.template_confirm_delete = None;
+            if ui.small_button("改名").on_hover_text("幫這個設定檔改名").clicked() {
+                self.preset_renaming = Some(n.clone());
+                self.preset_confirm_delete = None;
             }
-            // 刪除要按兩次（3 秒內）
-            let confirming = self.template_confirm_delete.as_ref().is_some_and(|(m, t)| *m == n && t.elapsed() < Duration::from_secs(3));
-            if confirming {
-                if ui.add(egui::Button::new(RichText::new("確定刪除").color(RED)).small()).clicked() {
-                    self.settings.room_templates.retain(|t| t.name != n);
-                    self.settings.last_template = None;
-                    self.template_confirm_delete = None;
-                }
-            } else if ui.small_button("刪除").on_hover_text("刪除這個頻道模板").clicked() {
-                self.template_confirm_delete = Some((n.clone(), Instant::now()));
+            if self.delete_preset_button(ui, &n) {
+                self.settings.host_preset = None;
             }
         });
-        if let Some(e) = &self.template_err {
+        if let Some(e) = &self.preset_err {
             ui.colored_label(RED, e);
         }
-        if let Some(t) = self.selected_template() {
-            ui.weak(format!("開房時建立：{}", t.channels.join("、")));
+        if let Some(p) = self.host_preset() {
+            let all: Vec<&str> = p.channels.iter().map(|c| c.channel.as_str()).collect();
+            let joined: Vec<&str> = p.channels.iter().filter(|c| c.joined).map(|c| c.channel.as_str()).collect();
+            ui.weak(format!("開房時建立：{}", all.join("、")));
+            ui.weak(format!("我加入：{}", if joined.is_empty() { "—".to_string() } else { joined.join("、") }));
         }
+    }
+
+    /// 刪除設定檔的按鈕：要按兩次（3 秒內）。刪掉了回傳 true
+    fn delete_preset_button(&mut self, ui: &mut egui::Ui, name: &str) -> bool {
+        let confirming =
+            self.preset_confirm_delete.as_ref().is_some_and(|(m, t)| m == name && t.elapsed() < Duration::from_secs(3));
+        if confirming {
+            if ui.add(egui::Button::new(RichText::new("確定刪除").color(RED)).small()).clicked() {
+                self.settings.presets.retain(|p| p.name != name);
+                self.preset_confirm_delete = None;
+                self.preset_msg = Some((format!("已刪除設定檔「{name}」"), Instant::now()));
+                return true;
+            }
+        } else if ui.small_button("刪除").on_hover_text("刪除這個設定檔").clicked() {
+            self.preset_confirm_delete = Some((name.to_string(), Instant::now()));
+        }
+        false
     }
 
     fn lobby(&mut self, ui: &mut egui::Ui) {
@@ -413,7 +422,7 @@ impl App {
         if ui.add_enabled(name_ok && !busy, big("建立房間（我當房主）")).clicked() {
             self.start_host();
         }
-        self.template_picker(ui);
+        self.host_preset_picker(ui);
 
         ui.add_space(14.0);
         ui.weak("或加入別人的房間");
@@ -623,21 +632,8 @@ impl App {
         });
 
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("頻道").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(snap.channels.len() > 1, egui::Button::new("存成頻道模板").small())
-                    .on_hover_text("把目前的頻道清單存起來，下次開房時選這個模板就會自動建好")
-                    .on_disabled_hover_text("除了大廳還沒有其他頻道")
-                    .clicked()
-                {
-                    self.template_new = Some(self.settings.last_template.clone().unwrap_or_default());
-                    self.preset_new = None;
-                }
-            });
-        });
-        self.template_save_row(ui, snap);
+        ui.label(RichText::new("頻道").strong());
+        self.drive_pending_apply(snap);
         self.presets_bar(ui, snap);
         for ch in &snap.channels {
             self.channel_card(ui, ch, snap.is_host);
@@ -830,38 +826,6 @@ impl App {
         ui.add_space(4.0);
     }
 
-    /// 輸入頻道模板名稱並儲存（同名就覆蓋）
-    fn template_save_row(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
-        let Some(name) = &mut self.template_new else { return };
-        let mut done = None;
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(name).hint_text("模板名稱，例如：公會戰").desired_width(200.0));
-            r.request_focus();
-            let ok = !name.trim().is_empty();
-            if ok && (ui.small_button("儲存").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                done = Some(true);
-            } else if ui.small_button("取消").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                done = Some(false);
-            }
-        });
-        match done {
-            Some(true) => {
-                let name = self.template_new.take().unwrap().trim().to_string();
-                let lobby = snap.channels.iter().find(|c| c.id == DEFAULT_CHANNEL).map_or("", |c| c.name.as_str());
-                let t = presets::capture_template(&name, lobby, snap.channels.iter().map(|c| c.name.as_str()));
-                let n = t.channels.len();
-                match self.settings.room_templates.iter_mut().find(|q| q.name == name) {
-                    Some(q) => *q = t,
-                    None => self.settings.room_templates.push(t),
-                }
-                self.settings.last_template = Some(name.clone());
-                self.preset_msg = Some((format!("已儲存頻道模板「{name}」（{n} 個頻道），下次開房時可以選用"), Instant::now()));
-            }
-            Some(false) => self.template_new = None,
-            None => {}
-        }
-    }
-
     /// 設定檔列：選擇、套用、另存目前組合、刪除
     fn presets_bar(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         ui.horizontal(|ui| {
@@ -884,17 +848,18 @@ impl App {
             if ui.add_enabled(sel.is_some(), egui::Button::new("套用").small()).clicked()
                 && let Some(n) = &sel
             {
-                self.apply_preset(snap, n);
+                self.pending_apply = Some(PendingApply::new(n.clone()));
             }
-            if ui.small_button("另存").on_hover_text("把目前各頻道的設定存成設定檔").clicked() {
-                self.preset_new = Some(sel.clone().unwrap_or_default());
-                self.template_new = None;
-            }
-            if ui.add_enabled(sel.is_some(), egui::Button::new("刪除").small()).clicked()
-                && let Some(n) = &sel
+            if ui
+                .small_button("另存")
+                .on_hover_text("把房間的頻道和我在各頻道的設定存成設定檔；開房時選它就會自動建好這些頻道")
+                .clicked()
             {
-                self.settings.presets.retain(|p| &p.name != n);
-                self.preset_msg = Some((format!("已刪除設定檔「{n}」"), Instant::now()));
+                self.preset_new = Some(sel.clone().unwrap_or_default());
+            }
+            if let Some(n) = &sel
+                && self.delete_preset_button(ui, n)
+            {
                 self.preset_sel = None;
             }
         });
@@ -913,13 +878,13 @@ impl App {
             match done {
                 Some(true) => {
                     let name = self.preset_new.take().unwrap().trim().to_string();
-                    let p = presets::capture(&name, snap.channels.iter().filter_map(|c| c.mine.as_ref().map(|m| (c.name.as_str(), m))));
-                    let n = p.channels.len();
+                    let p = presets::capture(&name, snap.channels.iter().map(|c| (c.name.as_str(), c.mine.as_ref())));
+                    let (n, joined) = (p.channels.len(), p.joined_count());
                     match self.settings.presets.iter_mut().find(|q| q.name == name) {
                         Some(q) => *q = p,
                         None => self.settings.presets.push(p),
                     }
-                    self.preset_msg = Some((format!("已儲存設定檔「{name}」（{n} 個頻道）"), Instant::now()));
+                    self.preset_msg = Some((format!("已儲存設定檔「{name}」（{n} 個頻道，加入 {joined} 個）"), Instant::now()));
                     self.settings.last_preset = Some(name.clone());
                     self.preset_sel = Some(name);
                 }
@@ -936,19 +901,43 @@ impl App {
         }
     }
 
-    /// 套用設定檔：設定檔裡的頻道照設定加入，其他頻道離開
-    fn apply_preset(&mut self, snap: &Snapshot, name: &str) {
+    /// 套用中的設定檔：我是房主就先建立缺少的頻道，等頻道都出現（最多 5 秒）再套用
+    fn drive_pending_apply(&mut self, snap: &Snapshot) {
+        let Some(pa) = &mut self.pending_apply else { return };
+        let Some(p) = self.settings.presets.iter().find(|p| p.name == pa.name) else {
+            self.pending_apply = None;
+            return;
+        };
+        let missing = presets::missing(p, snap.channels.iter().map(|c| c.name.as_str()));
+        if !pa.created && snap.is_host && !missing.is_empty() {
+            if let Some(s) = &self.session {
+                for n in &missing {
+                    s.create_channel(n);
+                }
+            }
+            pa.created = true;
+            pa.since = Instant::now();
+            return;
+        }
+        if pa.created && !missing.is_empty() && pa.since.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        let pa = self.pending_apply.take().unwrap();
+        self.apply_preset(snap, &pa.name, pa.created);
+    }
+
+    /// 套用設定檔：設定檔裡加入的頻道照設定加入，其他頻道離開。`created`：剛幫忙建了頻道
+    fn apply_preset(&mut self, snap: &Snapshot, name: &str, created: bool) {
         let Some(p) = self.settings.presets.iter().find(|p| p.name == name).cloned() else { return };
         let Some(s) = &self.session else { return };
-        let (changes, missing) = presets::plan(&p, snap.channels.iter().map(|c| (c.id, c.name.as_str())));
         let mut failed = 0;
-        for (id, cfg) in changes {
+        for (id, cfg) in presets::plan(&p, snap.channels.iter().map(|c| (c.id, c.name.as_str()))) {
             if s.set_channel(id, cfg).is_err() {
                 failed += 1;
             }
         }
-        // 「加入頻道時自動用按鍵說話」的記錄也跟著設定檔走
-        for c in &p.channels {
+        // 「加入頻道時自動用按鍵說話」的記錄也跟著設定檔走（只動設定檔裡加入的頻道）
+        for c in p.channels.iter().filter(|c| c.joined) {
             match (&c.talk[..], &c.ptt_key) {
                 ("ptt", Some(k)) => {
                     self.settings.ptt_keys.insert(c.channel.clone(), k.clone());
@@ -959,7 +948,13 @@ impl App {
             }
         }
         self.settings.last_preset = Some(name.to_string());
-        let mut msg = format!("已套用「{name}」");
+        self.preset_sel = Some(name.to_string());
+        let mut msg = if created { format!("已建立頻道並套用「{name}」") } else { format!("已套用「{name}」") };
+        // 不是房主時建不了頻道：說一下哪些要加入的頻道房間裡沒有
+        let missing: Vec<String> = presets::missing(&p, snap.channels.iter().map(|c| c.name.as_str()))
+            .into_iter()
+            .filter(|n| p.channels.iter().any(|c| &c.channel == n && c.joined))
+            .collect();
         if !missing.is_empty() {
             msg += &format!("（房間裡沒有：{}）", missing.join("、"));
         }
@@ -1193,6 +1188,20 @@ impl App {
         ui.weak(format!("{path}｜緩衝 {}｜遺失 {loss}｜欠載 {}", j.target, snap.underruns))
             .on_hover_text("遺失：最近 5 秒收到的語音中，需要補償（FEC／PLC）的比例。持續超過 5% 會聽到斷斷續續");
         ui.add_space(2.0);
+    }
+}
+
+/// 套用中的設定檔（見 [`App::drive_pending_apply`]）
+struct PendingApply {
+    name: String,
+    /// 已經建立缺少的頻道
+    created: bool,
+    since: Instant,
+}
+
+impl PendingApply {
+    fn new(name: String) -> Self {
+        Self { name, created: false, since: Instant::now() }
     }
 }
 

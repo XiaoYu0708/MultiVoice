@@ -38,14 +38,17 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// 房主離開或斷線時可以由我接手當房主
     pub allow_host: bool,
-    /// 頻道設定檔（一鍵切換訂閱組合）
+    /// 頻道設定檔（房間的頻道 + 我在各頻道的設定，一鍵切換；開房時可選一個自動建好頻道）
     pub presets: Vec<crate::presets::Preset>,
     /// 最近套用／儲存的設定檔（下次開啟時預先選好）
     pub last_preset: Option<String>,
-    /// 頻道模板（開房時自動建立頻道）
-    pub room_templates: Vec<crate::presets::RoomTemplate>,
-    /// 開房時要用的模板（None = 不用，只有大廳）
-    pub last_template: Option<String>,
+    /// 開房時套用的設定檔（None = 不用，只有大廳）
+    pub host_preset: Option<String>,
+    /// 舊版（v0.8.1～0.8.3）的頻道模板：讀進來後轉成設定檔，不再寫回
+    #[serde(skip_serializing)]
+    room_templates: Vec<crate::presets::RoomTemplate>,
+    #[serde(skip_serializing)]
+    last_template: Option<String>,
 }
 
 impl Default for Settings {
@@ -69,6 +72,7 @@ impl Default for Settings {
             allow_host: true,
             presets: Vec::new(),
             last_preset: None,
+            host_preset: None,
             room_templates: Vec::new(),
             last_template: None,
         }
@@ -83,10 +87,31 @@ fn path(profile: &str) -> Option<PathBuf> {
 
 impl Settings {
     pub fn load(profile: &str) -> Self {
-        path(profile)
+        let mut s: Self = path(profile)
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        s.migrate_templates();
+        s
+    }
+
+    /// 舊版的頻道模板轉成設定檔（同名就在後面加「（模板）」）
+    fn migrate_templates(&mut self) {
+        for t in std::mem::take(&mut self.room_templates) {
+            let was_host_choice = self.last_template.as_ref() == Some(&t.name);
+            let mut p = t.into_preset(protocol::DEFAULT_CHANNEL_NAME);
+            if self.presets.iter().any(|q| q.name == p.name) {
+                p.name += "（模板）";
+            }
+            if self.presets.iter().any(|q| q.name == p.name) {
+                continue;
+            }
+            if was_host_choice && self.host_preset.is_none() {
+                self.host_preset = Some(p.name.clone());
+            }
+            self.presets.push(p);
+        }
+        self.last_template = None;
     }
 
     pub fn save(&self, profile: &str) {
@@ -176,6 +201,33 @@ mod tests {
             name: name.into(),
             channels: chans.iter().map(|c| PresetChannel { channel: c.to_string(), ..Default::default() }).collect(),
         }
+    }
+
+    #[test]
+    fn old_templates_become_presets() {
+        let mut s: Settings = toml::from_str(
+            "last_template = \"公會戰\"
+             [[presets]]
+name = \"副本\"
+[[presets.channels]]
+channel = \"小隊\"
+             [[room_templates]]
+name = \"公會戰\"
+channels = [\"指揮部\", \"一隊\"]
+             [[room_templates]]
+name = \"副本\"
+channels = [\"二隊\"]
+",
+        )
+        .unwrap();
+        s.migrate_templates();
+        let names: Vec<&str> = s.presets.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["副本", "公會戰", "副本（模板）"]);
+        assert_eq!(s.host_preset.as_deref(), Some("公會戰"));
+        assert_eq!(s.presets[1].joined_count(), 1, "只在大廳");
+        // 不再寫回舊欄位
+        let out = toml::to_string_pretty(&s).unwrap();
+        assert!(!out.contains("room_templates") && !out.contains("last_template"));
     }
 
     #[test]
