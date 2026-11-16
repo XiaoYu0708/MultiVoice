@@ -134,6 +134,20 @@ pub fn template_missing<'a>(t: &RoomTemplate, room: impl IntoIterator<Item = &'a
     t.channels.iter().filter(|c| !room.contains(&c.as_str())).cloned().collect()
 }
 
+/// 模板改名：新名稱不能是空的，也不能和別的模板重複
+pub fn rename_template(templates: &mut [RoomTemplate], old: &str, new: &str) -> Result<(), &'static str> {
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("名稱不能是空的");
+    }
+    if new != old && templates.iter().any(|t| t.name == new) {
+        return Err("已經有同名的模板");
+    }
+    let t = templates.iter_mut().find(|t| t.name == old).ok_or("找不到這個模板")?;
+    t.name = new.to_string();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +195,16 @@ mod tests {
         assert_eq!(t.channels, ["指揮部", "一隊", "二隊"]);
         assert_eq!(template_missing(&t, ["大廳", "一隊"]), ["指揮部", "二隊"]);
         assert!(template_missing(&t, ["大廳", "指揮部", "一隊", "二隊"]).is_empty());
+    }
+
+    #[test]
+    fn template_rename_rejects_duplicates() {
+        let mut ts = vec![capture_template("甲", "大廳", ["一隊"]), capture_template("乙", "大廳", ["二隊"])];
+        assert!(rename_template(&mut ts, "甲", "乙").is_err());
+        assert!(rename_template(&mut ts, "甲", "  ").is_err());
+        assert!(rename_template(&mut ts, "甲", "甲").is_ok());
+        assert!(rename_template(&mut ts, "甲", " 公會戰 ").is_ok());
+        assert_eq!(ts[0].name, "公會戰");
+        assert_eq!(ts[0].channels, ["一隊"]);
     }
 }

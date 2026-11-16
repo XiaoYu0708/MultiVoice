@@ -58,6 +58,12 @@ pub struct App {
     preset_msg: Option<(String, Instant)>,
     /// 正在輸入「存成頻道模板」的名稱
     template_new: Option<String>,
+    /// 大廳：正在改名的頻道模板（輸入中的新名稱）
+    template_renaming: Option<String>,
+    /// 大廳：按了一次「刪除」的模板與時間（3 秒內再按一次才刪）
+    template_confirm_delete: Option<(String, Instant)>,
+    /// 模板改名失敗等訊息
+    template_err: Option<String>,
     /// 開房連線完成後要建立的頻道模板
     host_template: Option<presets::RoomTemplate>,
     /// 背景檢查新版本的結果
@@ -140,6 +146,9 @@ impl App {
             preset_msg: None,
             template_new: None,
             host_template: None,
+            template_renaming: None,
+            template_confirm_delete: None,
+            template_err: None,
             update_rx: Some(update::spawn_check()),
             update: None,
             install: None,
@@ -330,21 +339,62 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("頻道模板");
+            let sel = self.settings.last_template.clone();
+            // 改名中：選單換成輸入框
+            if let (Some(old), Some(text)) = (&sel, &mut self.template_renaming) {
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
+                r.request_focus();
+                let mut done = None;
+                if ui.small_button("確定").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = Some(true);
+                } else if ui.small_button("取消").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+                match done {
+                    Some(true) => match presets::rename_template(&mut self.settings.room_templates, old, text) {
+                        Ok(()) => {
+                            self.settings.last_template = Some(text.trim().to_string());
+                            self.template_renaming = None;
+                            self.template_err = None;
+                        }
+                        Err(e) => self.template_err = Some(e.into()),
+                    },
+                    Some(false) => {
+                        self.template_renaming = None;
+                        self.template_err = None;
+                    }
+                    None => {}
+                }
+                return;
+            }
             let names: Vec<String> = self.settings.room_templates.iter().map(|t| t.name.clone()).collect();
-            let text = self.settings.last_template.clone().unwrap_or_else(|| NONE.into());
+            let text = sel.clone().unwrap_or_else(|| NONE.into());
             egui::ComboBox::from_id_salt("template").width(170.0).selected_text(text).show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.settings.last_template, None, NONE);
                 for n in &names {
                     ui.selectable_value(&mut self.settings.last_template, Some(n.clone()), n);
                 }
             });
-            if let Some(n) = self.settings.last_template.clone()
-                && ui.small_button("刪除").on_hover_text("刪除這個頻道模板").clicked()
-            {
-                self.settings.room_templates.retain(|t| t.name != n);
-                self.settings.last_template = None;
+            let Some(n) = sel else { return };
+            if ui.small_button("改名").on_hover_text("幫這個頻道模板改名").clicked() {
+                self.template_renaming = Some(n.clone());
+                self.template_confirm_delete = None;
+            }
+            // 刪除要按兩次（3 秒內）
+            let confirming = self.template_confirm_delete.as_ref().is_some_and(|(m, t)| *m == n && t.elapsed() < Duration::from_secs(3));
+            if confirming {
+                if ui.add(egui::Button::new(RichText::new("確定刪除").color(RED)).small()).clicked() {
+                    self.settings.room_templates.retain(|t| t.name != n);
+                    self.settings.last_template = None;
+                    self.template_confirm_delete = None;
+                }
+            } else if ui.small_button("刪除").on_hover_text("刪除這個頻道模板").clicked() {
+                self.template_confirm_delete = Some((n.clone(), Instant::now()));
             }
         });
+        if let Some(e) = &self.template_err {
+            ui.colored_label(RED, e);
+        }
         if let Some(t) = self.selected_template() {
             ui.weak(format!("開房時建立：{}", t.channels.join("、")));
         }
