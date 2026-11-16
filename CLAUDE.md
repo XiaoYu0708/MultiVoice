@@ -1,7 +1,7 @@
 # MultiVoice — 給 Claude 的專案說明
 
 Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模式（玩家客戶端兼轉發），只做語音。
-完整設計在 `PLAN.md`，**目前進度與下一步在 `NEXT.md`（開新對話先讀它）**。
+完整設計在 `PLAN.md`（里程碑勾選即進度）。
 
 ## 使用者偏好（一定要遵守）
 - 一律用**繁體中文**回覆與寫註解、文件、commit 訊息。
@@ -70,10 +70,16 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵
 - 房間畫面不要有獨立的「語音設定」區塊，設定放在各頻道卡片裡
 - 不做置頂「誰在說話」小視窗（做過後移除）
-- **M6（角色、踢人、封鎖、relay 權杖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」保留
+- **M6（角色、踢人、封鎖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」、頻道改名後設定跟著走、relay 權杖保留
+- 網頁版：加入頻道就是收聽（不要「收聽」勾選）；不要浮動視窗與「背景只收聽」（改用 WebRTC 通話讓手機背景可說可聽）
+- 桌面版與網頁版進房時麥克風預設靜音
+
+## 待辦
+- **relay 權杖第二階段**：大家更新到 v0.8.0 以後，`deploy/iroh-relay.toml` 改成 `access.shared_token = ["…"]`（權杖由 `IROH_RELAY_ACCESS_TOKEN` 覆蓋）並重啟 iroh-relay 容器。**重啟前先問使用者**，之後測一次連線
+- 使用者實測還沒回報的：遊戲中按鍵說話（含遊戲以系統管理員執行）、USB 耳機熱插拔、AGC／說話門檻聽感、Android 網頁版背景
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 72 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 73 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率

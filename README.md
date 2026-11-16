@@ -64,4 +64,4 @@ tools/build-web.sh           # 輸出到 dist/web/（純靜態檔案）
 tools/build-web.sh --serve   # 建置後在 http://127.0.0.1:8080/ 測試
 ```
 
-設計文件：[PLAN.md](PLAN.md)；目前進度：[NEXT.md](NEXT.md)。
+設計文件與進度：[PLAN.md](PLAN.md)。
