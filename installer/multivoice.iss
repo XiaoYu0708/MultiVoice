@@ -48,7 +48,7 @@ AppMutex=MultiVoice-default
 CloseApplications=yes
 
 [Languages]
-Name: "zhtw"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
+Name: "zhtw"; MessagesFile: "ChineseTraditional.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "建立桌面捷徑"; GroupDescription: "其他捷徑："
