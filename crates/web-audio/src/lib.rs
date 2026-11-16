@@ -163,6 +163,12 @@ pub extern "C" fn mv_set_gate(p: *mut Handle, db: f32) {
     h(p).engine.gate_db = db;
 }
 
+/// 降噪開關（預設開）
+#[unsafe(no_mangle)]
+pub extern "C" fn mv_set_denoise(p: *mut Handle, on: u32) {
+    h(p).engine.denoise = on != 0;
+}
+
 /// 狀態（i32 陣列，長度在 `[0]`）：
 /// `[長度, 送出遮罩低 32, 高 32, 送出中, 偵測到說話, 音量 dB×10, 解碼, FEC, PLC, 遲到, 說話人數 n,
 ///   (成員, via 低 32, via 高 32) × n]`

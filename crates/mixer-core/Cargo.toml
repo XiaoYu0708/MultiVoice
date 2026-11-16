@@ -6,3 +6,4 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+nnnoiseless = { version = "0.5.2", default-features = false }

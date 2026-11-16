@@ -1,6 +1,6 @@
-//! 降噪 + 人聲機率（RNNoise 的純 Rust 移植：nnnoiseless）。
+//! 降噪 + 人聲機率（RNNoise 的純 Rust 移植：nnnoiseless）。桌面版（`audio::denoise`）與網頁版共用。
 //!
-//! - 每 480 取樣（10 ms）處理一次；一個 Opus 幀（960）切兩段
+//! - 48 kHz；每 480 取樣（10 ms）處理一次；一個 Opus 幀（960）切兩段
 //! - 會多出約 10 ms 的演算法延遲（重疊相加視窗）
 //! - 回傳的人聲機率（0..1）可作為 VAD 的參考，但不能單獨使用（風扇類噪音也可能被判高）
 //!
@@ -10,8 +10,9 @@
 
 use nnnoiseless::DenoiseState;
 
-use crate::codec::FRAME_SAMPLES;
-
+const SAMPLE_RATE: f32 = 48_000.0;
+/// 一個 Opus 幀（20 ms）
+pub const FRAME_SAMPLES: usize = 960;
 const SUB: usize = DenoiseState::FRAME_SIZE; // 480
 const _: () = assert!(FRAME_SAMPLES % SUB == 0);
 
@@ -52,7 +53,7 @@ impl Denoiser {
             speech_mix: 0.3,
             k: 0.0,
             // 講完話後約 150 ms 收回
-            release: (-1.0 / (0.150 * crate::codec::SAMPLE_RATE as f32)).exp(),
+            release: (-1.0 / (0.150 * SAMPLE_RATE)).exp(),
         }
     }
 

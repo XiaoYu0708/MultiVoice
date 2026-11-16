@@ -223,7 +223,7 @@ version = "0.8.6"
 dependencies = [
  "cpal",
  "dfn3_rs",
- "nnnoiseless",
+ "mixer-core",
  "opus",
  "rtrb",
  "rubato",
@@ -2715,6 +2715,9 @@ dependencies = [
 [[package]]
 name = "mixer-core"
 version = "0.8.6"
+dependencies = [
+ "nnnoiseless",
+]
 
 [[package]]
 name = "moxcms"
@@ -5692,7 +5695,6 @@ dependencies = [
  "cc",
  "libm",
  "mixer-core",
- "nnnoiseless",
  "opusic-sys",
  "protocol",
 ]

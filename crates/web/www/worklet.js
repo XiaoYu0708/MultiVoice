@@ -4,7 +4,7 @@
 //
 // main -> worklet messages: {t:'wasm', bytes} {t:'pkt', b} {t:'slot', slot, active, volume, pan, priority}
 //   {t:'talk', open:[lo,hi], vad:[lo,hi]} {t:'ptt', m:[lo,hi]} {t:'flags', muted, deafened, cues}
-//   {t:'volume', v} {t:'gate', db}
+//   {t:'volume', v} {t:'gate', db} {t:'denoise', on}
 // worklet -> main: {t:'ready'} {t:'error', msg} {t:'out', b:ArrayBuffer} {t:'status', s:Int32Array}
 
 const STATUS_EVERY = 4800; // samples (100 ms)
@@ -46,6 +46,7 @@ class MvEngine extends AudioWorkletProcessor {
       case 'flags': x.mv_set_flags(h, m.muted ? 1 : 0, m.deafened ? 1 : 0, m.cues ? 1 : 0); break;
       case 'volume': x.mv_set_volume(h, m.v); break;
       case 'gate': x.mv_set_gate(h, m.db); break;
+      case 'denoise': x.mv_set_denoise(h, m.on ? 1 : 0); break;
       case 'ugain': x.mv_set_user_gain(h, m.idx, m.gain); break;
     }
   }

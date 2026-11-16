@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 cpal = "0.18"
-nnnoiseless = { version = "0.5.2", default-features = false }
+mixer-core = { path = "../mixer-core" }
 opus = "0.4"
 rtrb = "0.4"
 rubato = "5"

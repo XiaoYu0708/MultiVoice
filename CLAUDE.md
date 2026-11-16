@@ -39,15 +39,15 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | crate | 用途 |
 |---|---|
 | `protocol` | 協定 v4（v3 房主轉移、v4 雙房主合併）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
-| `audio` | cpal 裝置（輸出為**立體聲**交錯、熱插拔偵測）、重取樣（`resample`）、Opus（libopus 1.6.1）、前端處理 `frontend`（RNNoise／DeepFilterNet3 降噪、VAD、AGC）、`list_devices` |
-| `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking）、說話遮罩與提示音（`talk`，桌面與網頁共用） |
+| `audio` | cpal 裝置（輸出為**立體聲**交錯、熱插拔偵測）、重取樣（`resample`）、Opus（libopus 1.6.1）、前端處理 `frontend`（RNNoise／DeepFilterNet3 降噪、VAD、AGC）、`list_devices`；`audio::denoise` 轉出 mixer-core 的 |
+| `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking）、說話遮罩與提示音（`talk`）、RNNoise 降噪＋人聲混回（`denoise`）——桌面與網頁共用 |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
 | `host-core` | 房主：加入驗證、成員與頻道、依 `talk_mask` 扇出 + 去重 + 補送 end-of-stream |
 | `client-core` | 成員端：加入（含 Redirect）、房間狀態、槽位分配、收送語音、換房主時換連線（`reconnect`）、失聯偵測；計時用 `n0_future`（可編 WASM） |
 | `hotkeys` | 全域按鍵：LL hook（不攔截）、按鍵解析、錄製模式（只在 Windows 有作用） |
 | `session` | 建房／加入（async）+ 房主轉移流程（`takeover.rs`）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
 | `web` | 網頁版（瀏覽器主執行緒，wasm-bindgen）：iroh WASM + `client-core`，前端檔案在 `crates/web/www/` |
-| `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、VAD、jitter buffer、混音 |
+| `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、RNNoise 降噪（開著時關掉瀏覽器自己的降噪）、VAD、jitter buffer、混音 |
 | `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔（房間的頻道 + 我在各頻道的設定；開房時可選一個自動建好頻道）、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個、`crash.rs` 錯誤對話框與 OpenGL→wgpu 備援） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
@@ -79,12 +79,12 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 使用者實測還沒回報的：遊戲中按鍵說話（含遊戲以系統管理員執行）、USB 耳機熱插拔、AGC／說話門檻聽感、Android 網頁版背景
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 77 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 78 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率
 - 沒有麥克風（只聽）：桌面版／CLI 用環境變數 `MULTIVOICE_TEST_NO_MIC=1`；網頁版用 `tools/headless.mjs … --no-mic`
-- 端對端煙霧測試：背景跑 `multivoice-cli host --open-mic --volume 0 --seconds N`，從輸出抓 `mv1…` 邀請票，再跑 `multivoice-cli join <票> --profile 別的名稱 …`
+- 端對端煙霧測試：背景跑 `multivoice-cli host --open-mic --volume 0 --seconds N`，從輸出抓 `mv1…` 邀請票（輸出有 emoji，grep 會當成二進位檔，要用 `grep -ao`），再跑 `multivoice-cli join <票> --profile 別的名稱 …`
 - **UI 驗證**：`tools/shot.ps1` 會啟動桌面版、用 PrintWindow 截圖（不怕被其他視窗蓋住），再用 Read 看圖：
   ```bash
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w tools/shot.ps1)" \

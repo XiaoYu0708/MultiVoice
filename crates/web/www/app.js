@@ -21,6 +21,7 @@ let leaving = false;
 const settings = {
   volume: store.get('volume', 1),
   gate: store.get('gate', -50),
+  denoise: store.get('denoise', true),
   cues: store.get('cues', true),
   wakelock: store.get('wakelock', true),
 };
@@ -135,9 +136,7 @@ async function enableMic() {
     return;
   }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
     if (!ctx || !node) { stream.getTracks().forEach((t) => t.stop()); return; }
     micStream = stream;
     micWanted = true;
@@ -174,6 +173,16 @@ navigator.mediaDevices?.addEventListener?.('devicechange', () => {
   if (ctx && node && !micStream && micProblem === 'none') enableMic();
 });
 
+/** Our own RNNoise (same as the desktop app) replaces the browser's noise suppression; denoising twice
+ *  makes voices sound muffled. Echo cancellation always stays on (phones use the speaker). */
+function micConstraints() {
+  return { echoCancellation: true, noiseSuppression: !settings.denoise, autoGainControl: true, channelCount: 1 };
+}
+function applyDenoise() {
+  pushSettings();
+  micStream?.getAudioTracks()[0]?.applyConstraints(micConstraints()).catch(() => {});
+}
+
 function showMicWarning(text, retry) {
   $('#mic-warning-text').textContent = text;
   $('#mic-retry').hidden = !retry;
@@ -198,6 +207,7 @@ function post(m, transfer) { node?.port.postMessage(m, transfer); }
 function pushSettings() {
   post({ t: 'volume', v: settings.volume });
   post({ t: 'gate', db: settings.gate });
+  post({ t: 'denoise', on: settings.denoise });
   post({ t: 'flags', muted, deafened, cues: settings.cues });
 }
 
@@ -674,6 +684,7 @@ function bindSetting(id, key, fmt, apply) {
 }
 bindSetting('volume', 'volume', (v) => Math.round(v * 100) + '%', pushSettings);
 bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudio(); });
+bindSetting('denoise', 'denoise', null, applyDenoise);
 bindSetting('cues', 'cues', null, pushSettings);
 bindSetting('wakelock', 'wakelock', null, (on) => setWakeLock(on && !!room));
 renderToggles();

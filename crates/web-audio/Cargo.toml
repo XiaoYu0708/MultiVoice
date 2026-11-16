@@ -11,7 +11,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 libm = "0.2"
 mixer-core = { path = "../mixer-core" }
-nnnoiseless = { version = "0.5.2", default-features = false }
 protocol = { path = "../protocol" }
 
 # 原生建置（單元測試）用現成的 libopus；wasm 由 build.rs 從原始碼編譯

@@ -1,15 +1,18 @@
 //! 音訊引擎：每次 AudioWorklet `process()` 呼叫一次（128 取樣），48 kHz。
 //!
-//! - 擷取：湊滿 20 ms（960 取樣）→ 說話判斷（RNNoise 人聲機率 + 音量門檻）→ Opus 編碼 →
+//! - 擷取：湊滿 20 ms（960 取樣）→ 降噪（RNNoise，與桌面版相同的 [`mixer_core::denoise`]）→
+//!   說話判斷（RNNoise 人聲機率 + 降噪後音量門檻）→ Opus 編碼 →
 //!   依說話遮罩（[`mixer_core::talk::TalkState`]，與桌面版相同）決定送給哪些頻道 → 放進 outbox 給 JS 送出
 //! - 播放：每 20 ms 從各說話者的 jitter buffer 取一幀解碼（含 FEC／PLC），依經由的頻道套用音量／定位／優先，
 //!   混成立體聲
 //! - 時鐘：播放的取樣數（不依賴 JS 計時器，背景分頁也準）
 //!
-//! 降噪、回音消除、自動增益交給瀏覽器的 getUserMedia（手機常用喇叭，瀏覽器的回音消除正好補上）。
+//! 回音消除、自動增益交給瀏覽器的 getUserMedia（手機常用喇叭，瀏覽器的回音消除正好補上）。
+//! 降噪開著時 JS 會關掉瀏覽器自己的降噪（避免降兩次讓人聲變悶）；關掉降噪時改回用瀏覽器的。
 
 use std::collections::BTreeMap;
 
+use mixer_core::denoise::Denoiser;
 use mixer_core::jitter::{JitterBuffer, Pull};
 use mixer_core::mix::{mix_into_stereo, soft_clip};
 use mixer_core::route::{ChannelMix, DUCK_GAIN, route};
@@ -32,30 +35,6 @@ const FORGET_US: u64 = 60_000_000;
 pub fn rms_db(x: &[f32]) -> f32 {
     let rms = (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
     20.0 * rms.max(1e-9).log10()
-}
-
-/// RNNoise 的人聲機率（只用來判斷是否在說話，聲音本身不改）
-struct Vad {
-    st: Box<nnnoiseless::DenoiseState<'static>>,
-    inp: Vec<f32>,
-    out: Vec<f32>,
-}
-
-impl Vad {
-    fn new() -> Self {
-        Self { st: nnnoiseless::DenoiseState::new(), inp: vec![0.0; 480], out: vec![0.0; 480] }
-    }
-
-    fn prob(&mut self, frame: &[f32]) -> f32 {
-        let mut p = 0f32;
-        for half in frame.chunks_exact(nnnoiseless::DenoiseState::FRAME_SIZE) {
-            for (d, s) in self.inp.iter_mut().zip(half) {
-                *d = s * 32768.0;
-            }
-            p = p.max(self.st.process_frame(&mut self.out, &self.inp));
-        }
-        p
-    }
 }
 
 struct Speaker {
@@ -86,11 +65,15 @@ pub struct Engine {
     pub cues: bool,
     pub volume: f32,
     pub gate_db: f32,
+    /// 降噪（RNNoise）：開著時送出降噪後的聲音；關掉時仍用 RNNoise 算人聲機率，但聲音不改
+    pub denoise: bool,
     /// 我聽某位成員的音量倍率（長按／右鍵調整；沒有 = 1.0）
     pub user_gain: BTreeMap<SessionIdx, f32>,
     // 擷取
     enc: Option<Encoder>,
-    vad: Vad,
+    denoiser: Denoiser,
+    /// 關掉降噪時給 RNNoise 算人聲機率用的副本
+    scratch: Vec<f32>,
     cap: Vec<f32>,
     pkt: Vec<u8>,
     prev: Option<Vec<u8>>,
@@ -135,9 +118,11 @@ impl Engine {
             cues: true,
             volume: 1.0,
             gate_db: DEFAULT_GATE_DBFS,
+            denoise: true,
             user_gain: BTreeMap::new(),
             enc: Encoder::new(BITRATE),
-            vad: Vad::new(),
+            denoiser: Denoiser::new(),
+            scratch: Vec::with_capacity(FRAME_SAMPLES),
             cap: Vec::with_capacity(FRAME_SAMPLES),
             pkt: vec![0; MAX_PACKET],
             prev: None,
@@ -213,7 +198,13 @@ impl Engine {
     }
 
     fn capture_frame(&mut self) {
-        let prob = self.vad.prob(&self.cap);
+        let prob = if self.denoise {
+            self.denoiser.process(&mut self.cap)
+        } else {
+            self.scratch.clear();
+            self.scratch.extend_from_slice(&self.cap);
+            self.denoiser.process(&mut self.scratch)
+        };
         self.level_db = rms_db(&self.cap);
         self.voiced = prob >= VAD_PROB && self.level_db >= self.gate_db;
         // 一直編碼，讓編碼器狀態連續；只是決定要不要送
@@ -439,6 +430,36 @@ mod tests {
         // 開口時補送前一幀（靜音時編好的那幀）＋ 這一幀
         assert_eq!(p.len(), 2);
         assert!(p.iter().all(|x| x.1 == 0b100));
+    }
+
+    /// 降噪：風扇類噪音開著降噪時音量明顯變小；關掉時不改聲音
+    #[test]
+    fn denoise_toggle() {
+        let run = |on: bool| {
+            let mut e = Engine::new();
+            e.denoise = on;
+            let (mut l, mut r) = (vec![0.0; 960], vec![0.0; 960]);
+            let (mut seed, mut lp) = (0x1234_5678_9ABC_DEF0u64, 0f32);
+            let mut level = 0.0;
+            for _ in 0..100 {
+                let x: Vec<f32> = (0..960)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        lp = 0.9 * lp + 0.1 * ((seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0);
+                        lp * 0.4
+                    })
+                    .collect();
+                e.process(Some(&x), &mut l, &mut r);
+                level = e.level_db;
+            }
+            level
+        };
+        let (off, on) = (run(false), run(true));
+        assert!(off > -40.0, "沒降噪時是原本的音量：{off}");
+        // 合成的風扇噪音會被 RNNoise 判成人聲，人聲時混回 30% 原音（約 -10.5 dB），所以這裡只壓低約 8 dB
+        assert!(on < off - 6.0, "降噪後應變小：{on} vs {off}");
     }
 
     /// 兩個引擎：A 一直開麥送給槽位 0 → 模擬房主轉發 → B 播出聲音；B 把那個頻道調成靜音就沒聲音
