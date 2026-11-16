@@ -24,7 +24,12 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   CMAKE_POLICY_VERSION_MINIMUM = "3.5"   # audiopus_sys 內附 libopus 的 CMakeLists 太舊，cmake 4.x 會拒絕
   [target.x86_64-pc-windows-gnu]
   rustflags = ["-C", "link-arg=-Wl,--exclude-all-symbols"]   # iroh 的 cdylib 在 debug 版超過 PE 65535 匯出上限
+  [env.MULTIVOICE_RELAY_TOKEN]
+  value = "<自架 relay 權杖，與 deploy/.env、GitHub secret RELAY_TOKEN 相同>"
   ```
+- **自架 relay 權杖**（`transport::RELAY_TOKEN`）：編譯時從環境變數 `MULTIVOICE_RELAY_TOKEN` 帶入，**不能寫進 git**（公開儲存庫）；
+  存在三個地方：本機 `.cargo/config.toml`、`deploy/.env`（docker compose 傳給 relay 的 `IROH_RELAY_ACCESS_TOKEN`）、GitHub secret `RELAY_TOKEN`。
+  沒帶權杖的版本連不上自架 relay（`access.shared_token` 生效後），只能用 n0 的 relay。權杖會編進公開的 exe／網頁版，只是門檻、不是密碼
 - **網頁版**：`tools/build-web.sh`（輸出 `dist/web/`；`--serve` 開 http://127.0.0.1:8080/、`--deploy` 複製到 `deploy/web/`）。需要 `wasm32-unknown-unknown` target、`wasm-bindgen-cli` 0.2.130（要和 Cargo.lock 一致）、LLVM（`C:\Program Files\LLVM\bin`，腳本會自動加進 PATH）
 - release 版開 LTO，**完整編譯要好幾分鐘**：Bash 指令的 timeout 要給足（例如 900000 ms），不要把 `timeout N cargo …` 包得太短（會被中斷，exit 143）。
 - 正在執行的 `multivoice.exe` 會鎖住檔案，重編前要先關掉（`taskkill //F //IM multivoice.exe`）。

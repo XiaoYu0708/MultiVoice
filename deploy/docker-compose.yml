@@ -26,6 +26,9 @@ services:
     image: n0computer/iroh-relay:v1.4.1
     restart: unless-stopped
     command: ["--config-path", "/etc/iroh-relay/relay.toml"]
+    environment:
+      # 存取權杖（iroh-relay.toml 的 access.shared_token 生效時才有作用）；值在 deploy/.env（不納入 git）
+      IROH_RELAY_ACCESS_TOKEN: ${MULTIVOICE_RELAY_TOKEN:-}
     ports:
       - "7842:7842/udp"   # QUIC 位址探測（QAD），幫助打洞；不經 Caddy
     volumes:

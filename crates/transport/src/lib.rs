@@ -16,6 +16,20 @@ pub use protocol::ALPN;
 /// 自架 relay（PLAN.md §7.3、§9）
 pub const DEFAULT_RELAY: &str = "https://relay.xiaoyu0708.ip-ddns.com/";
 
+/// 自架 relay 的存取權杖（relay 設定 `access.shared_token`）：**編譯時**由環境變數 `MULTIVOICE_RELAY_TOKEN` 帶入，
+/// 不寫在原始碼裡（GitHub Actions 用 secret `RELAY_TOKEN`；本機放在不納入 git 的 `.cargo/config.toml` 的 `[env]`）。
+/// 沒有權杖的版本連不上自架 relay，會改用 n0 的公共 relay。
+/// 注意：權杖會編進公開的執行檔與網頁版，有心人拿得到；它只是擋掉隨便拿來用的其他 iroh 程式，不是密碼
+pub const RELAY_TOKEN: Option<&str> = option_env!("MULTIVOICE_RELAY_TOKEN");
+
+fn own_relay_config(url: RelayUrl) -> RelayConfig {
+    let cfg = RelayConfig::from(url);
+    match RELAY_TOKEN.filter(|t| !t.is_empty()) {
+        Some(t) => cfg.with_auth_token(t),
+        None => cfg,
+    }
+}
+
 /// 網頁版客戶端（PLAN.md §8）。邀請連結 = 這個網址 + `#` + 邀請票（票不會傳到網站）
 pub const WEB_CLIENT_URL: &str = "https://voice.xiaoyu0708.ip-ddns.com/";
 
@@ -36,11 +50,12 @@ pub async fn bind(secret: SecretKey, relays: RelaySetup, accept: bool) -> Result
         RelaySetup::Default => {
             let map = iroh::defaults::prod::default_relay_map();
             let own: RelayUrl = DEFAULT_RELAY.parse().expect("DEFAULT_RELAY 是合法 URL");
-            map.insert(own.clone(), Arc::new(RelayConfig::from(own)));
+            map.insert(own.clone(), Arc::new(own_relay_config(own)));
             Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(map))
         }
         RelaySetup::Custom(urls) => {
-            Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(RelayMap::from_iter(urls)))
+            // 指定的 relay（自己架的、測試用的）也帶權杖
+            Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(RelayMap::from_iter(urls.into_iter().map(own_relay_config))))
         }
     };
     b = b.secret_key(secret);

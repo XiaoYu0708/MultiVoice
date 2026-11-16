@@ -133,10 +133,10 @@
 ## 5. M6：身分、權限、房間管理 —— **使用者決定不做**（2026-11-15）；以下保留紀錄，除非使用者改變主意
 - [x] 房主權限（2026-11-15）：`HostConfig::owner`（房主自己的成員 NodeId）；只有房主能改名／刪除頻道，其他人回 `Forbidden`；
   建立頻道所有人都可以。整合測試 `only_owner_can_rename_or_delete_channels`。M3 房主轉移時要決定 owner 是「建房者」還是「目前房主」
-- [ ] 頻道改名後，其他成員以舊名稱存的 PTT 鍵不會跟著改（房主自己改名時有搬過去）
+- [x] 頻道改名後，以舊名稱存的 PTT 鍵與頻道設定檔跟著改（2026-11-16，`Settings::follow_renames`：桌面版記住頻道 ID → 名稱，看到改名就搬；新名稱已有設定不覆蓋。單元測試，未做多人實測）
 - [ ] `talk_without_listen` 權限（PLAN §2.2）目前沒有限制
 - [ ] 角色、踢人、封鎖、重新產生邀請票、指定房主
-- [ ] 自架 relay 改用 `access.shared_token`，客戶端 `RelayConfig::with_auth_token`
+- [~] 自架 relay 權杖（2026-11-16）：客戶端完成（`transport::RELAY_TOKEN`，編譯時 `MULTIVOICE_RELAY_TOKEN`；本機測試 relay 驗證：有權杖連得上、沒有被拒）；compose 傳 `IROH_RELAY_ACCESS_TOKEN`。**第二階段待做**：大家更新到帶權杖的版本（含網頁版重新部署）後，`deploy/iroh-relay.toml` 改 `access.shared_token` 並重啟 iroh-relay（先問使用者）
 - [ ] 房間沉睡／喚醒；**頻道設定（音量、pan、說話模式）的保存**也等這個一起做
 
 ## 6. M7：網頁客戶端 — 第一版完成（2026-11-16）
@@ -174,7 +174,7 @@
   （標題 `MultiVoiceTray:<設定檔>`）送 `WM_SHOW_MAIN` 叫回視窗後結束（`AllowSetForegroundWindow`；
   `ChangeWindowMessageFilterEx` 讓一般權限也能叫回系統管理員身分執行的那個）；`--restarted` 時改成等舊的結束（最多 15 秒）
 - [x] 網頁版拿掉頻道的「收聽」勾選（使用者要求：加入就是收聽，不想聽就離開頻道）
-- [ ] 安裝程式（開始功能表捷徑、解除安裝）：目前單一 exe 免安裝，需要再做
+- [x] 安裝程式（2026-11-16，`installer/multivoice.iss`，Inno Setup，GitHub Actions 建置 `MultiVoice-Setup.exe`）：裝在 `%LOCALAPPDATA%\Programs\MultiVoice`（不需管理員，一鍵更新可直接換檔）、開始功能表／可選桌面捷徑、「應用程式」可解除安裝（詢問是否刪設定）；一鍵更新後 `update::sync_installed_version` 改登錄檔的版本；免安裝 exe 照樣提供
 - [ ] 手機原生 App 評估
 
 ## 已知小問題

@@ -6,8 +6,11 @@ http_bind_addr = "[::]:8080"
 # QUIC 位址探測：讓客戶端得知自己的公開位址，提高打洞成功率
 enable_quic_addr_discovery = true
 enable_metrics = false
-# TODO（M6）：改用 shared_token 限制只有 MultiVoice 客戶端能使用，並設定每客戶端流量上限
+# 存取控制：只讓帶權杖的 MultiVoice 客戶端使用（權杖由環境變數 IROH_RELAY_ACCESS_TOKEN 帶入，見 docker-compose.yml、deploy/.env）。
+# 分兩階段：先發佈會帶權杖的客戶端（v0.8.0 起）與網頁版，大家更新後再把下面改成 shared_token 並重啟 iroh-relay。
+# 舊版客戶端之後連不上這個 relay，只能用 n0 的公共 relay（跨網路可能連不上用新版的房主）。
 access = "everyone"
+# access.shared_token = ["由環境變數 IROH_RELAY_ACCESS_TOKEN 覆蓋"]
 
 [tls]
 https_bind_addr = "[::]:8443"
