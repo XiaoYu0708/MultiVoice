@@ -12,7 +12,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 audio = { path = "../audio" }
-eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow"] }
+eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "wgpu_no_default_features"] }
+# OpenGL 不能用時的備援：只開 DirectX 12（含軟體繪製 WARP），不帶 Vulkan／GLES 以免執行檔太大
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "dx12"] }
 protocol = { path = "../protocol" }
 serde = { version = "1", features = ["derive"] }
 session = { path = "../session" }

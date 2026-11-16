@@ -43,7 +43,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `session` | 建房／加入（async）+ 房主轉移流程（`takeover.rs`）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
 | `web` | 網頁版（瀏覽器主執行緒，wasm-bindgen）：iroh WASM + `client-core`，前端檔案在 `crates/web/www/` |
 | `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、VAD、jitter buffer、混音 |
-| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個） |
+| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個、`crash.rs` 錯誤對話框與 OpenGL→wgpu 備援） |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
 
@@ -77,7 +77,9 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
     -Out "<暫存區>\\shot.png" -WaitMs 6000 -Extra "--auto-join <票> --deafen"
   ```
   桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`、`--auto-update`（搭配 `MULTIVOICE_TEST_VERSION=0.0.1`，找到新版就直接更新）、
-  `--restarted`（自己重新啟動自己時帶：等舊程式結束，不是叫醒它）。**同一個設定檔只能開一個**，測試時多開要用不同的 `--profile`
+  `--restarted`（自己重新啟動自己時帶：等舊程式結束，不是叫醒它）。
+  繪製：預設 OpenGL（glow），失敗時改用 wgpu（DX12）重新啟動並在 `%APPDATA%\MultiVoice\use-wgpu` 記住；`--renderer wgpu|glow` 指定、環境變數 `MULTIVOICE_TEST_GL_FAIL=1` 模擬 OpenGL 失敗。
+  啟動失敗／panic 會跳對話框並寫 `%APPDATA%\MultiVoice\error.log`（`crash.rs`）。**同一個設定檔只能開一個**，測試時多開要用不同的 `--profile`
 - 一鍵更新實測：把 exe 複製到暫存資料夾再跑（會被換成 GitHub 上的最新版），不要在 target 目錄裡直接測
   （`--deafen` 拒聽**也會關麥**；要驗證「送出中」時改在測試設定檔放 `output_volume = 0.0`，不要用 `--deafen`）。
   **桌面版與網頁版進房時麥克風預設靜音**（使用者要求，`AudioOpts::start_muted`），要驗證「送出中」得先按取消靜音；CLI 不受影響
