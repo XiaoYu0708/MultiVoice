@@ -258,6 +258,19 @@ button.danger:hover:not(:disabled) {
 .notes ul { padding-left: 1.2em; margin: 0; }
 .notes li { margin: 4px 0; }
 
+/* 加入畫面底部：GitHub 最新版下載連結 */
+a.download {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  color: var(--fg); text-decoration: none;
+  transition: border-color 0.2s var(--ease), transform 0.2s var(--ease);
+}
+a.download > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+a.download .arrow { color: var(--blue); font-size: 1.3rem; flex: none; transition: transform 0.2s var(--ease); }
+a.download:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--line)); }
+a.download:hover .arrow { transform: translateX(3px); }
+a.download:active { transform: scale(0.99); }
+a.download:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
 /* ---------------------------------------------------------------- 房間 */
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .status { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; }
