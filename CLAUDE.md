@@ -52,7 +52,10 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 ## 版本控制與發佈
 - GitHub：`XiaoYu0708/MultiVoice`（**公開**儲存庫，分支 `master`）。文件不要寫入使用者的個人環境細節（使用者路徑、內網 IP、其他服務名稱）
 - 版本號在根目錄 `Cargo.toml` 的 `[workspace.package] version`（所有 crate 共用）
-- 發佈：`tools/release.sh 0.2.0 "更新說明"`（改版本 → 測試 → 建置 → commit + tag `v0.2.0` → push → `gh release create` 附上兩個 exe）。
+- 發佈：`tools/release.sh 0.2.0 "更新說明"`（改版本 → 本機測試 → commit + push → 建 Release 草稿 → 推 tag `v0.2.0`
+  → GitHub Actions `.github/workflows/release.yml` 用 **MSVC**（crt-static）建置、附上兩個 exe、公開草稿；腳本會等建置完成）。
+  發佈的 exe 不用本機 GNU 版：GNU 編的 exe 曾被 Defender 機器學習誤判（`Bearfoos.A!ml`、`Wacatac.B!ml`），MSVC 版實測沒被擋。
+  手動執行該 workflow（`gh workflow run release.yml`）只建置不發佈，exe 在 Artifacts `multivoice-windows`
   **發佈前要先問使用者**（會公開執行檔）
 - 桌面版啟動時查 GitHub 最新 Release（`desktop/src/update.rs`），比目前版本新就在畫面上方提示；
   測試提示列：環境變數 `MULTIVOICE_TEST_VERSION=0.0.1`
