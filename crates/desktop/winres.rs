@@ -1,5 +1,6 @@
 // Windows 資源（桌面版與 CLI 的 build.rs 用 include! 共用）：圖示、版本資訊。
-// 應用程式資訊清單不用另外放：GNU 工具鏈已經會連結預設的（asInvoker、支援的作業系統），再放一份會衝突。
+// 應用程式資訊清單：GNU 工具鏈已經會連結預設的（asInvoker、支援的作業系統），再放一份會衝突；
+// MSVC 不會自動放，所以只有 MSVC 時才加（發佈用的 exe 在 GitHub Actions 用 MSVC 編）。
 //
 // 有版本資訊（產品名稱、說明、版本、來源網址）與圖示的執行檔，看起來比較像正常的軟體，
 // 一般認為比較不會被防毒軟體的機器學習模型誤判（例如 Windows Defender 的 `Trojan:Win32/Bearfoos.A!ml`）。
@@ -21,13 +22,20 @@ fn embed_windows_resources(file_name: &str, description: &str) {
     std::fs::write(&ico, make_ico(&[16, 20, 24, 32, 40, 48, 64, 256])).unwrap();
 
     let path = |p: &std::path::Path| p.display().to_string().replace('\\', "/");
+    let manifest = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let m = out.join("app.manifest");
+        std::fs::write(&m, MANIFEST).unwrap();
+        format!("1 24 \"{}\"\n", path(&m))
+    } else {
+        String::new()
+    };
     let rc = out.join("app.rc");
     std::fs::write(
         &rc,
         format!(
             r#"#pragma code_page(65001)
 1 ICON "{ico}"
-1 VERSIONINFO
+{manifest}1 VERSIONINFO
 FILEVERSION {a},{b},{c},0
 PRODUCTVERSION {a},{b},{c},0
 FILEFLAGSMASK 0x3fL
@@ -64,6 +72,31 @@ END
     .unwrap();
     embed_resource::compile(&rc, embed_resource::NONE).manifest_required().unwrap();
 }
+
+/// 一般權限執行、宣告支援 Windows 7～11、新版通用控制項（對話框外觀）、長路徑
+const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings><longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware></windowsSettings>
+  </application>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
 
 /// 多尺寸 .ico（每個尺寸一張 32 位元 BGRA 的 DIB，加上全 0 的 AND 遮罩）
 fn make_ico(sizes: &[usize]) -> Vec<u8> {

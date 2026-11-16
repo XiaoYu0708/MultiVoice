@@ -1,0 +1,66 @@
+# 用 MSVC 建置 Windows 發佈檔（multivoice.exe、multivoice-cli.exe）
+#
+# - 推送 v* 標籤：建置後附到同名的 Release（tools/release.sh 先建好草稿），再把草稿公開
+# - 手動執行（workflow_dispatch）：只建置，exe 放在這次執行的 Artifacts，方便先測試
+#
+# 為什麼用 MSVC：GNU（MinGW）工具鏈編出來的 Rust 程式比較常被 Windows Defender 的機器學習誤判成木馬
+# （例如 Trojan:Win32/Wacatac.B!ml）；在 GitHub 上建置也方便之後做程式碼簽章。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      # audiopus_sys 內附 libopus 的 CMakeLists 太舊，cmake 4.x 會拒絕
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      # 靜態連結 C 執行階段：使用者不用另外安裝 Visual C++ 可轉散發套件
+      RUSTFLAGS: "-C target-feature=+crt-static"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust 工具鏈
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc
+          rustup default stable-x86_64-pc-windows-msvc
+          rustc -vV
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 建置
+        run: cargo build --release --locked -p desktop -p cli
+
+      - name: 檢查執行檔
+        shell: pwsh
+        run: |
+          foreach ($f in 'multivoice.exe', 'multivoice-cli.exe') {
+            $p = "target/release/$f"
+            $i = (Get-Item $p).VersionInfo
+            "{0}  {1:N1} MB  {2} {3}  SHA-256 {4}" -f $f, ((Get-Item $p).Length / 1MB), $i.ProductName, $i.ProductVersion, (Get-FileHash $p -Algorithm SHA256).Hash
+          }
+          & "target/release/multivoice-cli.exe" --help | Select-Object -First 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multivoice-windows
+          path: |
+            target/release/multivoice.exe
+            target/release/multivoice-cli.exe
+
+      - name: 附到 Release 並公開
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "$TAG" target/release/multivoice.exe target/release/multivoice-cli.exe --clobber
+          gh release edit "$TAG" --draft=false
