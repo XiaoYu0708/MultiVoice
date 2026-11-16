@@ -42,6 +42,10 @@ pub struct Settings {
     pub presets: Vec<crate::presets::Preset>,
     /// 最近套用／儲存的設定檔（下次開啟時預先選好）
     pub last_preset: Option<String>,
+    /// 頻道模板（開房時自動建立頻道）
+    pub room_templates: Vec<crate::presets::RoomTemplate>,
+    /// 開房時要用的模板（None = 不用，只有大廳）
+    pub last_template: Option<String>,
 }
 
 impl Default for Settings {
@@ -65,6 +69,8 @@ impl Default for Settings {
             allow_host: true,
             presets: Vec::new(),
             last_preset: None,
+            room_templates: Vec::new(),
+            last_template: None,
         }
     }
 }

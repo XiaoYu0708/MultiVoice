@@ -2,6 +2,8 @@
 //!
 //! 頻道 ID 每次建房都不同，所以跟 PTT 鍵一樣用**頻道名稱**對應。
 //! 套用時：設定檔裡有的頻道照設定加入；沒有的頻道離開；設定檔裡有、房間沒有的頻道略過。
+//!
+//! 頻道模板（[`RoomTemplate`]）：房間有哪些頻道（只存名稱），開房時選一個就自動建好。
 
 use protocol::ChannelId;
 use serde::{Deserialize, Serialize};
@@ -108,6 +110,30 @@ pub fn plan<'a>(
     (changes, missing)
 }
 
+/// 頻道模板：開房時自動建立的頻道（不含大廳，大廳建房時就有）
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RoomTemplate {
+    pub name: String,
+    pub channels: Vec<String>,
+}
+
+/// 目前房間的頻道名稱（依順序）→ 模板；大廳與重複的名稱不存
+pub fn capture_template<'a>(name: &str, lobby: &str, room: impl IntoIterator<Item = &'a str>) -> RoomTemplate {
+    let mut channels: Vec<String> = Vec::new();
+    for n in room {
+        if n != lobby && !channels.iter().any(|c| c == n) {
+            channels.push(n.to_string());
+        }
+    }
+    RoomTemplate { name: name.into(), channels }
+}
+
+/// 套用模板：房間裡還沒有的頻道名稱（依模板順序）
+pub fn template_missing<'a>(t: &RoomTemplate, room: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let room: Vec<&str> = room.into_iter().collect();
+    t.channels.iter().filter(|c| !room.contains(&c.as_str())).cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +173,13 @@ mod tests {
         assert_eq!(changes[1].0, 3);
         assert_eq!(changes[1].1.unwrap().talk, TalkMode::Voice);
         assert_eq!(missing, vec!["不存在".to_string()]);
+    }
+
+    #[test]
+    fn template_skips_lobby_and_existing() {
+        let t = capture_template("公會戰", "大廳", ["大廳", "指揮部", "一隊", "指揮部", "二隊"]);
+        assert_eq!(t.channels, ["指揮部", "一隊", "二隊"]);
+        assert_eq!(template_missing(&t, ["大廳", "一隊"]), ["指揮部", "二隊"]);
+        assert!(template_missing(&t, ["大廳", "指揮部", "一隊", "二隊"]).is_empty());
     }
 }
