@@ -126,4 +126,80 @@ impl Settings {
     pub fn ptt_key(&self, channel: &str) -> Option<session::Hotkey> {
         self.ptt_keys.get(channel).and_then(|k| k.parse().ok())
     }
+
+    /// 頻道改名：以名稱存的 PTT 鍵與頻道設定檔跟著改（新名稱已經有設定就不覆蓋）
+    pub fn rename_channel(&mut self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        if !self.ptt_keys.contains_key(new)
+            && let Some(k) = self.ptt_keys.remove(old)
+        {
+            self.ptt_keys.insert(new.to_string(), k);
+        }
+        for p in &mut self.presets {
+            if p.channels.iter().any(|c| c.channel == new) {
+                continue;
+            }
+            for c in p.channels.iter_mut().filter(|c| c.channel == old) {
+                c.channel = new.to_string();
+            }
+        }
+    }
+
+    /// 比對上次看到的頻道名稱（`known`，以頻道 ID 對應），有改名就 [`Self::rename_channel`]，再更新 `known`。
+    /// 不管是誰改的名（房主改名後別人也會收到），存的設定都跟著走
+    pub fn follow_renames<'a>(&mut self, known: &mut BTreeMap<u32, String>, current: impl IntoIterator<Item = (u32, &'a str)>) {
+        let current: BTreeMap<u32, String> = current.into_iter().map(|(id, n)| (id, n.to_string())).collect();
+        for (id, name) in &current {
+            if let Some(old) = known.get(id) {
+                self.rename_channel(old, name);
+            }
+        }
+        *known = current;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::presets::{Preset, PresetChannel};
+
+    fn preset(name: &str, chans: &[&str]) -> Preset {
+        Preset {
+            name: name.into(),
+            channels: chans.iter().map(|c| PresetChannel { channel: c.to_string(), ..Default::default() }).collect(),
+        }
+    }
+
+    #[test]
+    fn renamed_channel_keeps_ptt_key_and_presets() {
+        let mut s = Settings::default();
+        s.ptt_keys.insert("小隊".into(), "Mouse4".into());
+        s.ptt_keys.insert("指揮".into(), "F1".into());
+        s.presets = vec![preset("攻擊", &["小隊", "大廳"]), preset("衝突", &["小隊", "一隊"])];
+        let mut known = BTreeMap::new();
+
+        // 第一次只是記下來
+        s.follow_renames(&mut known, [(1, "大廳"), (2, "小隊"), (3, "指揮")]);
+        assert_eq!(s.ptt_keys.get("小隊").map(String::as_str), Some("Mouse4"));
+
+        // 頻道 2 改名為「一隊」；頻道 3 改名為已經有鍵的名稱就不覆蓋
+        s.ptt_keys.insert("二隊".into(), "F2".into());
+        s.follow_renames(&mut known, [(1, "大廳"), (2, "一隊"), (3, "二隊")]);
+        assert_eq!(s.ptt_keys.get("一隊").map(String::as_str), Some("Mouse4"));
+        assert!(!s.ptt_keys.contains_key("小隊"));
+        assert_eq!(s.ptt_keys.get("二隊").map(String::as_str), Some("F2"));
+        assert_eq!(s.ptt_keys.get("指揮").map(String::as_str), Some("F1"));
+        assert_eq!(s.presets[0].channels[0].channel, "一隊");
+        assert_eq!(s.presets[0].channels[1].channel, "大廳");
+        // 這個設定檔已經有「一隊」，不要變成兩個同名頻道
+        assert_eq!(s.presets[1].channels[0].channel, "小隊");
+        assert_eq!(known.get(&2).map(String::as_str), Some("一隊"));
+
+        // 刪掉的頻道從 known 移除，之後同 ID 出現不會被當成改名
+        s.follow_renames(&mut known, [(1, "大廳")]);
+        s.follow_renames(&mut known, [(1, "大廳"), (2, "新頻道")]);
+        assert_eq!(s.ptt_keys.get("一隊").map(String::as_str), Some("Mouse4"));
+    }
 }

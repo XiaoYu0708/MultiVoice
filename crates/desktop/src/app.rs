@@ -36,6 +36,8 @@ pub struct App {
     new_channel: String,
     /// 正在改名的頻道與輸入中的名稱
     renaming: Option<(u32, String)>,
+    /// 上次看到的頻道名稱（頻道 ID → 名稱），用來發現改名、搬移以名稱存的設定
+    channel_names: std::collections::BTreeMap<u32, String>,
     /// 正在錄製哪個按鍵
     recording: Option<KeyTarget>,
     /// 全域按鍵監聽啟動失敗的原因
@@ -121,6 +123,7 @@ impl App {
             applied: None,
             new_channel: String::new(),
             renaming: None,
+            channel_names: Default::default(),
             recording: None,
             // 大廳就要能錄製按鍵，所以一開始就啟動監聽
             hotkey_err: hotkeys::start().err(),
@@ -272,6 +275,7 @@ impl App {
                 if let Some(t) = &self.tray {
                     t.set_session(Some(s.shared()));
                 }
+                self.channel_names.clear();
                 self.session = Some(s);
                 self.applied = Some(self.settings.audio_opts());
             }
@@ -822,12 +826,8 @@ impl App {
                     r.request_focus();
                     let ok = !text.trim().is_empty();
                     if ok && (ui.small_button("確定").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                        let new = text.trim().to_string();
-                        // 這個頻道存的 PTT 鍵跟著新名稱走
-                        if let Some(k) = self.settings.ptt_keys.remove(&ch.name) {
-                            self.settings.ptt_keys.insert(new.clone(), k);
-                        }
-                        s.rename_channel(ch.id, &new);
+                        // 存的 PTT 鍵與設定檔等房主確認改名後再跟著改（follow_renames）
+                        s.rename_channel(ch.id, text.trim());
                         self.renaming = None;
                     } else if ui.small_button("取消").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.renaming = None;
@@ -1062,6 +1062,9 @@ impl eframe::App for App {
         self.handle_close(ui.ctx());
         self.feed_local_keys(ui.ctx());
         let snap = self.session.as_ref().map(|s| s.snapshot());
+        if let Some(snap) = &snap {
+            self.settings.follow_renames(&mut self.channel_names, snap.channels.iter().map(|c| (c.id, c.name.as_str())));
+        }
         self.poll_recording(snap.as_ref());
         if let Some(snap) = &snap {
             egui::Panel::bottom("controls").show(ui, |ui| self.controls(ui, snap));
