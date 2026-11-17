@@ -16,6 +16,8 @@ protocol = { path = "../protocol" }
 # 原生建置（單元測試）用現成的 libopus；wasm 由 build.rs 從原始碼編譯
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 opusic-sys = "0.7"
+# 強力降噪：wasm 上在另一個模組（web-dfn），原生（測試）直接用
+dfn3_rs = { version = "0.1.2", features = ["embedded-model"] }
 
 [build-dependencies]
 cc = "1"

@@ -151,6 +151,10 @@ input[type="checkbox"]:checked {
 input[type="checkbox"]:checked::before { transform: translateX(18px); background: #fff; }
 input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
 .check { display: flex; align-items: center; gap: 10px; margin: 10px 0; cursor: pointer; }
+/* an option that belongs to the one above it (強力降噪 under 降噪) */
+.sub { margin-left: 28px; }
+p.sub { margin-top: -6px; }
+.check:has(input:disabled) { opacity: 0.5; cursor: default; }
 
 /* 滑桿：已填滿的部分是漸層（--fill 由 app.js 設定） */
 input[type="range"] {

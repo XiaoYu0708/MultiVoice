@@ -4,8 +4,12 @@
 //
 // main -> worklet messages: {t:'wasm', bytes} {t:'pkt', b} {t:'slot', slot, active, volume, pan, priority}
 //   {t:'talk', open:[lo,hi], vad:[lo,hi]} {t:'ptt', m:[lo,hi]} {t:'flags', muted, deafened, cues}
-//   {t:'volume', v} {t:'gate', db} {t:'denoise', on}
-// worklet -> main: {t:'ready'} {t:'error', msg} {t:'out', b:ArrayBuffer} {t:'status', s:Int32Array}
+//   {t:'volume', v} {t:'gate', db} {t:'denoise', on} {t:'strong', on} {t:'dfn', bytes}
+// worklet -> main: {t:'ready'} {t:'error', msg} {t:'out', b:ArrayBuffer} {t:'status', s:Int32Array} {t:'dfn', ok, msg}
+//
+// Strong noise suppression (DeepFilterNet3) is a separate module, web_dfn.wasm (built with SIMD, ~5.5 MB,
+// only downloaded when turned on). The engine calls the import mv.dfn(ptr) for every 10 ms of mic audio;
+// we copy those 480 samples into the dfn module, process them in place and copy them back.
 
 const STATUS_EVERY = 4800; // samples (100 ms)
 
@@ -17,12 +21,15 @@ class MvEngine extends AudioWorkletProcessor {
     this.queue = [];
     this.hadInput = false;
     this.sinceStatus = 0;
+    this.d = null;          // web_dfn.wasm exports
+    this.dh = 0;
+    this.strongWanted = false;
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
 
   onMessage(m) {
     if (m.t === 'wasm') {
-      WebAssembly.instantiate(m.bytes, {}).then(({ instance }) => {
+      WebAssembly.instantiate(m.bytes, { mv: { dfn: (p) => this.dfnRun(p) } }).then(({ instance }) => {
         this.x = instance.exports;
         this.h = this.x.mv_new();
         for (const q of this.queue) this.onMessage(q);
@@ -32,6 +39,15 @@ class MvEngine extends AudioWorkletProcessor {
       return;
     }
     if (!this.x) { this.queue.push(m); return; }
+    if (m.t === 'dfn') {
+      WebAssembly.instantiate(m.bytes, {}).then(({ instance }) => {
+        this.d = instance.exports;
+        this.dh = this.d.dfn_new();
+        this.x.mv_set_strong(this.h, this.strongWanted ? 1 : 0);
+        this.port.postMessage({ t: 'dfn', ok: true });
+      }, (err) => this.port.postMessage({ t: 'dfn', ok: false, msg: String(err) }));
+      return;
+    }
     const x = this.x, h = this.h;
     switch (m.t) {
       case 'pkt': {
@@ -47,8 +63,25 @@ class MvEngine extends AudioWorkletProcessor {
       case 'volume': x.mv_set_volume(h, m.v); break;
       case 'gate': x.mv_set_gate(h, m.db); break;
       case 'denoise': x.mv_set_denoise(h, m.on ? 1 : 0); break;
+      case 'strong':
+        // start from a clean state every time it is turned on
+        if (m.on && !this.strongWanted && this.d) this.d.dfn_reset(this.dh);
+        this.strongWanted = m.on;
+        x.mv_set_strong(h, m.on && this.d ? 1 : 0);
+        break;
       case 'ugain': x.mv_set_user_gain(h, m.idx, m.gain); break;
     }
+  }
+
+  /** import for the engine: denoise 480 samples at `p` (engine memory) in place; 0 = not loaded */
+  dfnRun(p) {
+    const d = this.d;
+    if (!d) return 0;
+    const b = d.dfn_buf(this.dh);
+    new Float32Array(d.memory.buffer, b, 480).set(new Float32Array(this.x.memory.buffer, p, 480));
+    d.dfn_process(this.dh);
+    new Float32Array(this.x.memory.buffer, p, 480).set(new Float32Array(d.memory.buffer, b, 480));
+    return 1;
   }
 
   process(inputs, outputs) {

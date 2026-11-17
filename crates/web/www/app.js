@@ -22,6 +22,7 @@ const settings = {
   volume: store.get('volume', 1),
   gate: store.get('gate', -50),
   denoise: store.get('denoise', true),
+  strong: store.get('strong', false),
   cues: store.get('cues', true),
   wakelock: store.get('wakelock', true),
 };
@@ -121,6 +122,7 @@ async function startAudio() {
   sentSlots = new Map();
   sentGains = new Map();
   pushSettings();
+  loadDfn();
   await enableMic();
 }
 
@@ -173,13 +175,56 @@ navigator.mediaDevices?.addEventListener?.('devicechange', () => {
   if (ctx && node && !micStream && micProblem === 'none') enableMic();
 });
 
+// ---------------------------------------------------------------- strong noise suppression
+// DeepFilterNet3 (same as the desktop app's 強力降噪) lives in web_dfn.wasm, built with WebAssembly SIMD;
+// downloaded the first time it is turned on and handed to the worklet (see worklet.js).
+// Tiny module using a SIMD instruction (from wasm-feature-detect): browsers without SIMD reject it.
+const SIMD = (() => {
+  try {
+    return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+  } catch { return false; }
+})();
+let dfnBytes = null;   // Promise<ArrayBuffer>, kept for the next AudioWorklet (every join makes a new one)
+let dfnState = '';     // for the current worklet: '' | 'loading' | 'ready' | 'error'
+function loadDfn() {
+  if (!node || !SIMD || !settings.denoise || !settings.strong || dfnState === 'loading' || dfnState === 'ready') return;
+  dfnState = 'loading';
+  renderStrong();
+  const target = node;
+  dfnBytes ??= fetch('web_dfn.wasm').then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); });
+  dfnBytes.then((b) => {
+    if (node !== target) return;
+    const copy = b.slice(0);
+    post({ t: 'dfn', bytes: copy }, [copy]);
+  }, (e) => {
+    dfnBytes = null;
+    if (node !== target) return;
+    dfnState = 'error';
+    log('強力降噪下載失敗：' + e.message);
+    renderStrong();
+  });
+}
+function renderStrong() {
+  $('#strong').disabled = !SIMD || !settings.denoise;
+  $('#strong-state').textContent = !SIMD ? '（這個瀏覽器不支援）'
+    : !settings.denoise || !settings.strong ? ''
+    : dfnState === 'loading' ? '（下載中…）'
+    : dfnState === 'error' ? '（載入失敗，改用一般降噪）'
+    : dfnState === 'ready' ? '（使用中）' : '';
+}
+function applyStrong() {
+  pushSettings();
+  loadDfn();
+  renderStrong();
+}
+
 /** Our own RNNoise (same as the desktop app) replaces the browser's noise suppression; denoising twice
  *  makes voices sound muffled. Echo cancellation always stays on (phones use the speaker). */
 function micConstraints() {
   return { echoCancellation: true, noiseSuppression: !settings.denoise, autoGainControl: true, channelCount: 1 };
 }
 function applyDenoise() {
-  pushSettings();
+  applyStrong();
   micStream?.getAudioTracks()[0]?.applyConstraints(micConstraints()).catch(() => {});
 }
 
@@ -198,6 +243,7 @@ function stopAudio() {
   micProblem = '';
   try { node?.disconnect(); } catch {}
   node = null;
+  dfnState = '';
   ctx?.close().catch(() => {});
   ctx = null;
 }
@@ -208,6 +254,7 @@ function pushSettings() {
   post({ t: 'volume', v: settings.volume });
   post({ t: 'gate', db: settings.gate });
   post({ t: 'denoise', on: settings.denoise });
+  post({ t: 'strong', on: settings.denoise && settings.strong });
   post({ t: 'flags', muted, deafened, cues: settings.cues });
 }
 
@@ -215,6 +262,11 @@ function onWorklet(m) {
   if (m.t === 'out') room?.send_packets(new Uint8Array(m.b));
   else if (m.t === 'status') { audioStatus = parseStatus(m.s); renderAudio(); }
   else if (m.t === 'error') log('音訊引擎錯誤：' + m.msg);
+  else if (m.t === 'dfn') {
+    dfnState = m.ok ? 'ready' : 'error';
+    if (!m.ok) log('強力降噪載入失敗：' + m.msg);
+    renderStrong();
+  }
 }
 
 function parseStatus(s) {
@@ -685,6 +737,8 @@ function bindSetting(id, key, fmt, apply) {
 bindSetting('volume', 'volume', (v) => Math.round(v * 100) + '%', pushSettings);
 bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudio(); });
 bindSetting('denoise', 'denoise', null, applyDenoise);
+bindSetting('strong', 'strong', null, applyStrong);
+renderStrong();
 bindSetting('cues', 'cues', null, pushSettings);
 bindSetting('wakelock', 'wakelock', null, (on) => setWakeLock(on && !!room));
 renderToggles();

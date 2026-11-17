@@ -105,6 +105,8 @@
       <small class="muted">「偵測說話」模式下聲音比門檻大才送出。背景吵就調高，講話常被切掉就調低。</small>
     </label>
     <label class="check"><input id="denoise" type="checkbox"> 降噪（和桌面版相同的 RNNoise，壓掉風扇、鍵盤等背景噪音）</label>
+    <label class="check sub"><input id="strong" type="checkbox"> <span>強力降噪（DeepFilterNet，和桌面版相同）<small class="muted" id="strong-state"></small></span></label>
+    <p class="muted small sub">背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。第一次開會下載約 5 MB；較舊的手機可能會斷音。</p>
     <label class="check"><input id="cues" type="checkbox"> 開／關麥提示音</label>
     <label class="check"><input id="wakelock" type="checkbox"> 在房間裡時保持螢幕開啟（手機建議開）</label>
     <p class="muted small" id="net-text"></p>

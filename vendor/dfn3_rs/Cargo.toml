@@ -1,0 +1,18 @@
+# MultiVoice 修改版（見 MULTIVOICE.md）：加上 WebAssembly SIMD128 kernel，其餘與 crates.io 的 0.1.2 相同
+[package]
+name = "dfn3_rs"
+version = "0.1.2"
+edition = "2024"
+description = "Allocation-free real-time DeepFilterNet3 speech enhancement"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/TanixLu/dfn3_rs"
+keywords = ["audio", "speech", "denoise", "deepfilternet", "simd"]
+categories = ["multimedia::audio"]
+
+[features]
+default = ["embedded-model"]
+embedded-model = []
+
+[dependencies]
+realfft = "3.4"

@@ -6,7 +6,7 @@
 #   tools/build-web.sh --serve    建置後在 http://127.0.0.1:8080/ 開本機測試伺服器（localhost 才能用麥克風）
 #
 # 需要：rustup target add wasm32-unknown-unknown、wasm-bindgen-cli（版本要和 Cargo.lock 的 wasm-bindgen 相同）、
-# clang（LLVM，用來把 ring 與 libopus 編成 wasm）
+# clang（LLVM，用來把 ring 與 libopus 編成 wasm）。強力降噪模組（web_dfn.wasm）需要瀏覽器支援 WebAssembly SIMD
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,6 +21,11 @@ cargo build --profile wasm --target wasm32-unknown-unknown -p web -p web-audio
 # build 目錄（本機的 .cargo/config.toml 可能改過）
 TARGET=$(cargo metadata --format-version 1 --no-deps | grep -o '"target_directory":"[^"]*"' | sed 's/.*:"//; s/"$//; s/\\/\//g')
 WASM="$TARGET/wasm32-unknown-unknown/wasm"
+
+# 強力降噪（DeepFilterNet3）：獨立模組，用 SIMD128 建置、速度優先（release）。
+# RUSTFLAGS 不同，放在另一個 target 目錄，不會讓上面的建置快取失效
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+simd128" \
+  cargo build --release --target wasm32-unknown-unknown -p web-dfn --target-dir "$TARGET/web-dfn"
 OUT=dist/web
 # 只清內容不刪資料夾（Windows 上資料夾被測試伺服器開著時刪不掉）
 mkdir -p "$OUT"
@@ -28,6 +33,7 @@ find "$OUT" -mindepth 1 -delete
 mkdir -p "$OUT/pkg"
 wasm-bindgen "$WASM/web.wasm" --target web --out-dir "$OUT/pkg" --no-typescript --remove-name-section --remove-producers-section
 cp "$WASM/web_audio.wasm" "$OUT/"
+cp "$TARGET/web-dfn/wasm32-unknown-unknown/release/web_dfn.wasm" "$OUT/"
 cp crates/web/www/* "$OUT/"
 # 每次建置換掉 service worker 的快取名稱
 VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')

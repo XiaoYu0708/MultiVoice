@@ -7,11 +7,13 @@
 //! - 收到語音封包：寫進 `mv_packet_buf(len)`，再呼叫 `mv_push_packet(len)`
 //! - 要送出的封包：`mv_outbox()` / `mv_outbox_len()`，讀完 `mv_outbox_clear()`
 //! - 狀態：`mv_status()`（i32 陣列，格式見該函式）
+//! - 強力降噪：匯入函式 `mv.dfn(指標)`（由 worklet.js 轉給 `web_dfn.wasm`，見 [`strong`]）
 
 pub mod engine;
 #[cfg(target_family = "wasm")]
 mod libc;
 pub mod opus;
+pub mod strong;
 
 use engine::Engine;
 use mixer_core::route::ChannelMix;
@@ -167,6 +169,12 @@ pub extern "C" fn mv_set_gate(p: *mut Handle, db: f32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn mv_set_denoise(p: *mut Handle, on: u32) {
     h(p).engine.denoise = on != 0;
+}
+
+/// 強力降噪開關（JS 在 `web_dfn.wasm` 載入好之後才打開）
+#[unsafe(no_mangle)]
+pub extern "C" fn mv_set_strong(p: *mut Handle, on: u32) {
+    h(p).engine.strong = on != 0;
 }
 
 /// 狀態（i32 陣列，長度在 `[0]`）：

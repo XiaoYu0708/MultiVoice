@@ -14,12 +14,19 @@ members = [
     "crates/netprobe",
     "crates/web",
     "crates/web-audio",
+    "crates/web-dfn",
 ]
+# 修改過的第三方 crate（用 [patch] 取代 crates.io 版本）
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.8.6"
 edition = "2024"
 publish = false
+
+# DeepFilterNet3：加上 wasm SIMD128 kernel 給網頁版用（vendor/dfn3_rs/MULTIVOICE.md）
+[patch.crates-io]
+dfn3_rs = { path = "vendor/dfn3_rs" }
 
 [profile.release]
 lto = true

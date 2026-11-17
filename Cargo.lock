@@ -995,8 +995,6 @@ dependencies = [
 [[package]]
 name = "dfn3_rs"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ccc5b8ba365194ed3cc4d74bc13946fb964f930808fccd692df99e48c4b1172"
 dependencies = [
  "realfft",
 ]
@@ -5693,10 +5691,18 @@ name = "web-audio"
 version = "0.8.6"
 dependencies = [
  "cc",
+ "dfn3_rs",
  "libm",
  "mixer-core",
  "opusic-sys",
  "protocol",
+]
+
+[[package]]
+name = "web-dfn"
+version = "0.8.6"
+dependencies = [
+ "dfn3_rs",
 ]
 
 [[package]]
