@@ -138,9 +138,9 @@ unsafe fn make_icon(look: Look) -> HICON {
     let n = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as usize;
     let bg = match look {
         Look::Idle => [128, 128, 128],
-        Look::InRoom => [66, 120, 220],
-        Look::Talking => [67, 181, 129],
-        Look::Muted => [220, 80, 70],
+        Look::InRoom => [124, 58, 237],
+        Look::Talking => [34, 197, 94],
+        Look::Muted => [244, 63, 94],
     };
     let mut px = crate::style::icon_rgba(n, bg, look == Look::Muted);
     // Windows 要 BGRA；AND 遮罩一個像素一個位元組也可以（32 bpp 時以 alpha 為準）

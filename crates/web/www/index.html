@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#16181d">
+<meta name="theme-color" content="#0f0f23" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f3ff" media="(prefers-color-scheme: light)">
 <meta name="description" content="MultiVoice 網頁版：同時收聽、同時對多個頻道說話的遊戲語音">
 <title>MultiVoice</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -13,14 +14,34 @@
 </head>
 <body>
 
+<!-- 圖示（Lucide 風格線條圖示，用 <use> 引用；不用 emoji） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+    <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></symbol>
+    <symbol id="i-slash" viewBox="0 0 24 24"><path d="M3 3l18 18"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+    <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 12h2M6 8v8M10 5v14M14 9v6M18 7v10M22 12h-2"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  </defs>
+</svg>
+
 <!-- 加入畫面 -->
 <main id="join-view" class="view">
-  <header class="brand">
-    <img src="icon.svg" alt="" width="40" height="40">
-    <div>
-      <h1>MultiVoice</h1>
-      <p class="muted">網頁版<span id="version"></span></p>
-    </div>
+  <header class="hero">
+    <img class="logo" src="icon.svg" alt="" width="64" height="64">
+    <h1>MultiVoice</h1>
+    <p class="tagline">同時收聽、同時對多個頻道說話的遊戲語音</p>
+    <span class="badge">網頁版<span id="version"></span></span>
   </header>
 
   <form id="join-form" class="panel" autocomplete="off">
@@ -32,68 +53,67 @@
       <span>邀請連結</span>
       <textarea id="ticket" rows="3" required spellcheck="false" placeholder="貼上邀請連結，或直接打開別人傳的連結"></textarea>
     </label>
-    <p id="join-error" class="error" hidden></p>
+    <p id="join-error" class="error" role="alert" hidden></p>
     <button id="join-btn" type="submit" class="primary big">加入房間</button>
   </form>
 
-  <section class="notes">
+  <section class="notes panel">
     <h2>使用前請注意</h2>
     <ul>
-      <li>進房時<b>麥克風是關的</b>，按「麥克風已關」打開才會送出聲音。要說話需要允許使用麥克風；沒有麥克風或不允許的話，仍然可以進房只聽。</li>
-      <li>手機可以直接切到遊戲或鎖定螢幕，照樣說話和收聽。</li>
-      <li>內建和桌面版相同的降噪；背景很吵時可以在「音訊設定」打開強力降噪。用喇叭也不怕回音（回音消除一直開著）。</li>
-      <li>網頁版一律經過轉送伺服器連線，延遲比桌面版多一點，也不能當房主。</li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-mic"/></svg>
+        <span>進房時<b>麥克風是關的</b>，按下方的「麥克風已關」打開才會送出聲音。要說話需要允許使用麥克風；沒有麥克風或不允許的話，仍然可以進房只聽。</span></li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg>
+        <span>手機可以直接切到遊戲或鎖定螢幕，照樣說話和收聽。</span></li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-wave"/></svg>
+        <span>內建和桌面版相同的降噪；背景很吵時可以在「音訊設定」打開強力降噪。用喇叭也不怕回音（回音消除一直開著）。</span></li>
+      <li><svg class="ic" aria-hidden="true"><use href="#i-cloud"/></svg>
+        <span>網頁版一律經過轉送伺服器連線，延遲比桌面版多一點，也不能當房主。</span></li>
     </ul>
   </section>
 
   <a class="download panel" href="https://github.com/XiaoYu0708/MultiVoice/releases/latest" target="_blank" rel="noopener">
+    <span class="download-ic" aria-hidden="true"><svg class="ic"><use href="#i-download"/></svg></span>
     <div>
       <b>下載 Windows 桌面版</b>
       <span class="muted small">可以開房當房主、遊戲中按鍵說話，延遲也比網頁版低</span>
     </div>
-    <span class="arrow" aria-hidden="true">&rarr;</span>
+    <svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg>
   </a>
 </main>
 
 <!-- 房間畫面 -->
-<main id="room-view" class="view" hidden>
+<main id="room-view" class="view room" hidden>
   <header class="topbar">
-    <div class="status">
+    <div class="status" role="status">
       <span id="conn-dot" class="dot"></span>
       <span id="conn-text">連線中…</span>
     </div>
     <div class="top-actions">
-      <button id="invite-btn" class="ghost" type="button">複製邀請連結</button>
-      <button id="leave-btn" class="ghost danger" type="button">離開</button>
+      <button id="invite-btn" class="ghost" type="button" title="複製邀請連結，傳給朋友加入">
+        <svg class="ic" aria-hidden="true"><use href="#i-link"/></svg><span>複製邀請</span>
+      </button>
+      <button id="leave-btn" class="ghost danger icon-only" type="button" aria-label="離開房間" title="離開房間">
+        <svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>
+      </button>
     </div>
   </header>
 
-  <section class="controls panel">
-    <div class="row">
-      <button id="mute-btn" class="toggle" type="button" aria-pressed="false">麥克風開</button>
-      <button id="deafen-btn" class="toggle" type="button" aria-pressed="false">收聽中</button>
-    </div>
-    <div class="meter" aria-hidden="true"><div id="meter-fill"></div><div id="meter-gate"></div></div>
-    <p id="mic-text" class="muted small">麥克風：—</p>
-    <p id="mobile-note" class="muted small" hidden>可以直接切到遊戲或鎖定螢幕，照樣說話和收聽。</p>
-    <p id="mic-warning" class="warn small" hidden><span id="mic-warning-text"></span>
-      <button id="mic-retry" class="ghost" type="button" hidden>開啟麥克風</button></p>
-  </section>
+  <p id="mobile-note" class="hint" hidden>可以直接切到遊戲或鎖定螢幕，照樣說話和收聽。</p>
 
   <section>
     <div class="section-head">
       <h2>頻道</h2>
-      <span id="member-count" class="muted small"></span>
+      <span id="member-count" class="badge"></span>
     </div>
     <div id="channels"></div>
     <form id="new-channel" class="new-channel">
-      <input id="new-channel-name" maxlength="32" placeholder="新頻道名稱">
-      <button type="submit" class="ghost">新增頻道</button>
+      <input id="new-channel-name" maxlength="32" placeholder="新頻道名稱" aria-label="新頻道名稱">
+      <button type="submit" class="ghost"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>新增頻道</span></button>
     </form>
   </section>
 
   <details class="panel settings">
-    <summary>音訊設定</summary>
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg><span>音訊設定</span><svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
     <label class="field">
       <span>輸出音量 <b id="volume-val"></b></span>
       <input id="volume" type="range" min="0" max="2" step="0.05">
@@ -101,7 +121,7 @@
     <label class="field">
       <span>說話偵測門檻 <b id="gate-val"></b></span>
       <input id="gate" type="range" min="-70" max="-20" step="1">
-      <small class="muted">「偵測說話」模式下聲音比門檻大才送出。背景吵就調高，講話常被切掉就調低。</small>
+      <small class="muted">「偵測說話」模式下聲音比門檻大才送出（音量條上的黃線）。背景吵就調高，講話常被切掉就調低。</small>
     </label>
     <label class="check"><input id="denoise" type="checkbox"> 降噪（和桌面版相同的 RNNoise，壓掉風扇、鍵盤等背景噪音）</label>
     <label class="check sub"><input id="strong" type="checkbox"> <span>強力降噪（DeepFilterNet，和桌面版相同）<small class="muted" id="strong-state"></small></span></label>
@@ -111,15 +131,38 @@
     <p class="muted small" id="net-text"></p>
   </details>
 
-  <ol id="log" class="log"></ol>
+  <ol id="log" class="log" aria-live="polite"></ol>
+
+  <!-- 底部操作列：麥克風音量、麥克風／收聽開關（固定在畫面底部，手機拇指好按） -->
+  <section class="dock" aria-label="我的麥克風與收聽">
+    <div class="dock-inner">
+      <div class="mic-line">
+        <div class="meter" aria-hidden="true"><div id="meter-fill"></div><div id="meter-gate"></div></div>
+        <p id="mic-text" class="small">麥克風：—</p>
+      </div>
+      <p id="mic-warning" class="warn small" hidden><span id="mic-warning-text"></span>
+        <button id="mic-retry" class="ghost small-btn" type="button" hidden>開啟麥克風</button></p>
+      <div class="row">
+        <button id="mute-btn" class="toggle" type="button" aria-pressed="false">
+          <span class="tg-ic" aria-hidden="true"><svg class="ic"><use href="#i-mic"/></svg><svg class="ic slash"><use href="#i-slash"/></svg></span>
+          <span class="tg-label">麥克風開</span>
+        </button>
+        <button id="deafen-btn" class="toggle" type="button" aria-pressed="false">
+          <span class="tg-ic" aria-hidden="true"><svg class="ic"><use href="#i-headphones"/></svg><svg class="ic slash"><use href="#i-slash"/></svg></span>
+          <span class="tg-label">收聽中</span>
+        </button>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- 長按（手機）或右鍵（電腦）成員名字：調整聽這個人的音量 -->
 <div id="vol-pop" class="sheet-backdrop" hidden>
   <div class="sheet panel" role="dialog" aria-labelledby="vol-name">
+    <span class="grabber" aria-hidden="true"></span>
     <h3 id="vol-name"></h3>
     <div class="row">
-      <input id="vol-range" type="range" min="0" max="1000" step="1">
+      <input id="vol-range" type="range" min="0" max="1000" step="1" aria-labelledby="vol-name">
       <b id="vol-val" class="vol-val-big"></b>
     </div>
     <div class="row">
@@ -134,9 +177,10 @@
 <template id="channel-tpl">
   <article class="card">
     <div class="card-head">
+      <span class="ch-ic" aria-hidden="true"><svg class="ic"><use href="#i-hash"/></svg></span>
       <h3 class="ch-name"></h3>
-      <span class="ch-count muted small"></span>
-      <button class="join ghost" type="button"></button>
+      <span class="ch-count badge"></span>
+      <button class="join" type="button"></button>
     </div>
     <div class="members-bar">
       <button class="members-toggle ghost small-btn" type="button">顯示成員</button>
@@ -144,8 +188,9 @@
     </div>
     <ul class="chips"></ul>
     <div class="ch-controls">
-      <div class="row wrap">
-        <label class="inline">說話
+      <div class="ctl-grid">
+        <label class="field compact">
+          <span>說話方式</span>
           <select class="mode">
             <option value="vad">偵測說話</option>
             <option value="open">一直開麥</option>
@@ -153,12 +198,12 @@
             <option value="off">不說話</option>
           </select>
         </label>
+        <label class="field compact">
+          <span>頻道音量 <b class="vol-val"></b></span>
+          <input class="vol" type="range" min="0" max="2" step="0.05">
+        </label>
       </div>
-      <label class="field compact">
-        <span>頻道音量 <b class="vol-val"></b></span>
-        <input class="vol" type="range" min="0" max="2" step="0.05">
-      </label>
-      <button class="ptt" type="button">按住說話</button>
+      <button class="ptt" type="button"><svg class="ic" aria-hidden="true"><use href="#i-mic"/></svg><span>按住說話</span></button>
     </div>
   </article>
 </template>

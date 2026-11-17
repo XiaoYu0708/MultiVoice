@@ -409,8 +409,20 @@ $('#leave-btn').addEventListener('click', async () => {
 $('#invite-btn').addEventListener('click', async () => {
   if (!room) return;
   const link = location.origin + location.pathname + '#' + room.ticket();
-  try { await navigator.clipboard.writeText(link); log('已複製邀請連結'); }
-  catch { log('無法複製，請手動複製網址列'); }
+  const b = $('#invite-btn'), label = b.querySelector('span');
+  try {
+    await navigator.clipboard.writeText(link);
+    log('已複製邀請連結');
+    b.classList.add('copied');
+    b.querySelector('use').setAttribute('href', '#i-check');
+    label.textContent = '已複製';
+    clearTimeout(b.timer);
+    b.timer = setTimeout(() => {
+      b.classList.remove('copied');
+      b.querySelector('use').setAttribute('href', '#i-link');
+      label.textContent = '複製邀請';
+    }, 2000);
+  } catch { log('無法複製，請手動複製網址列'); }
 });
 
 $('#new-channel').addEventListener('submit', (e) => {
@@ -701,10 +713,14 @@ function log(text) {
 function renderToggles() {
   const m = $('#mute-btn'), d = $('#deafen-btn');
   m.setAttribute('aria-pressed', String(muted || deafened));
-  m.textContent = muted || deafened ? '麥克風已關' : '麥克風開';
+  m.querySelector('.tg-label').textContent = muted || deafened ? '麥克風已關' : '麥克風開';
   d.setAttribute('aria-pressed', String(deafened));
-  d.textContent = deafened ? '拒聽中' : '收聽中';
+  d.querySelector('.tg-label').textContent = deafened ? '拒聽中' : '收聽中';
 }
+// the room view leaves room at the bottom for the fixed dock (its height changes when a warning shows)
+new ResizeObserver(([e]) => {
+  document.documentElement.style.setProperty('--dock-h', `${e.target.offsetHeight}px`);
+}).observe($('.dock'));
 $('#mute-btn').addEventListener('click', () => {
   // un-muting while deafened also un-deafens (same as desktop)
   if (muted || deafened) { muted = false; deafened = false; } else muted = true;

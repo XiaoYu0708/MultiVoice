@@ -11,7 +11,7 @@ use crate::presets;
 use crate::settings::Settings;
 use crate::tray::Tray;
 use crate::update;
-use crate::style::{self, AMBER, BLUE, GREEN, RED};
+use crate::style::{self, AMBER, Ctl, GREEN, Icon, RED};
 
 pub struct App {
     rt: tokio::runtime::Runtime,
@@ -408,32 +408,51 @@ impl App {
     }
 
     fn lobby(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.label("你的名稱");
-        ui.add(egui::TextEdit::singleline(&mut self.settings.name).hint_text("其他人看到的名字").desired_width(f32::INFINITY));
+        ui.add_space(4.0);
+        let busy = self.pending.is_some();
+        style::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("你的名稱").strong());
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.name)
+                    .hint_text("其他人看到的名字")
+                    .margin(egui::vec2(8.0, 6.0))
+                    .desired_width(f32::INFINITY),
+            );
+        });
         let name_ok = !self.settings.name.trim().is_empty();
 
-        ui.add_space(12.0);
-        let busy = self.pending.is_some();
-        let full_w = ui.available_width();
-        let big = egui::vec2(full_w, 42.0);
-        if style::primary_button(ui, name_ok && !busy, "建立房間（我當房主）", big).clicked() {
-            self.start_host();
-        }
-        self.host_preset_picker(ui);
+        ui.add_space(10.0);
+        style::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("開新房間").strong());
+            ui.weak("你當房主，把邀請連結傳給朋友");
+            ui.add_space(4.0);
+            let big = egui::vec2(ui.available_width(), 44.0);
+            if style::primary_button(ui, name_ok && !busy, "建立房間", big).clicked() {
+                self.start_host();
+            }
+            self.host_preset_picker(ui);
+        });
 
-        ui.add_space(14.0);
-        ui.weak("或加入別人的房間");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.ticket_input)
-                .hint_text("貼上邀請連結（Ctrl+V）")
-                .desired_rows(3)
-                .desired_width(f32::INFINITY),
-        );
-        let ticket_ok = protocol::ticket::clean_input(&self.ticket_input).starts_with("mv1");
-        if style::primary_button(ui, name_ok && ticket_ok && !busy, "加入房間", big).clicked() {
-            self.start_join();
-        }
+        ui.add_space(10.0);
+        style::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("加入別人的房間").strong());
+            ui.add(
+                egui::TextEdit::multiline(&mut self.ticket_input)
+                    .hint_text("貼上邀請連結（Ctrl+V）")
+                    .margin(egui::vec2(8.0, 6.0))
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(4.0);
+            let ticket_ok = protocol::ticket::clean_input(&self.ticket_input).starts_with("mv1");
+            let big = egui::vec2(ui.available_width(), 44.0);
+            if style::primary_button(ui, name_ok && ticket_ok && !busy, "加入房間", big).clicked() {
+                self.start_join();
+            }
+        });
 
         if let Some((_, msg)) = &self.pending {
             ui.add_space(8.0);
@@ -447,8 +466,14 @@ impl App {
             ui.colored_label(RED, e);
         }
 
-        ui.add_space(12.0);
-        egui::CollapsingHeader::new("音訊設定").default_open(false).show(ui, |ui| self.audio_settings(ui));
+        ui.add_space(10.0);
+        style::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::CollapsingHeader::new(RichText::new("音訊設定").strong())
+                .default_open(false)
+                .show(ui, |ui| self.audio_settings(ui));
+        });
+        ui.add_space(6.0);
         if self.profile != "default" {
             ui.weak(format!("身分設定檔：{}", self.profile));
         }
@@ -545,12 +570,14 @@ impl App {
                 if snap.reconnecting {
                     ui.spinner();
                     ui.label(RichText::new("正在找新房主…").strong().color(AMBER));
-                } else if snap.is_host {
-                    ui.label(RichText::new("你是房主").strong().color(AMBER));
                 } else {
-                    ui.label(RichText::new("已加入房間").strong());
+                    dot(ui, GREEN, false);
+                    ui.label(RichText::new("已連線").strong());
+                    if snap.is_host {
+                        style::badge(ui, "房主", AMBER);
+                    }
                 }
-                ui.weak(format!("{} 人", snap.members.len() + 1));
+                style::badge(ui, format!("{} 人", snap.members.len() + 1), style::accent_text(ui));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // 邀請連結 = 網頁版網址 + `#` + 邀請票：桌面版貼上也能加入，所以只給連結
                     let copied = self.copied_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2));
@@ -586,13 +613,13 @@ impl App {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let color = if !snap.has_mic {
-                    Color32::GRAY
+                    style::faint(ui)
                 } else if snap.muted {
                     RED
                 } else if snap.tx_active {
                     GREEN
                 } else {
-                    Color32::GRAY
+                    style::faint(ui)
                 };
                 dot(ui, color, snap.tx_active && !snap.muted);
                 ui.label(RichText::new(format!("{}（我）", snap.me.name)).strong());
@@ -610,8 +637,7 @@ impl App {
             });
             let db = 20.0 * snap.mic_peak.max(1e-6).log10();
             let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
-            let bar_color = if snap.muted { Color32::GRAY } else if db > -3.0 { AMBER } else { BLUE };
-            ui.add(egui::ProgressBar::new(frac).desired_height(6.0).fill(bar_color));
+            style::meter(ui, frac, snap.tx_active && !snap.muted, snap.muted || !snap.has_mic, 8.0, &[]);
             if !snap.has_mic {
                 ui.weak("插上麥克風後會自動開啟，不用重新進房");
             } else if snap.talking_to.is_empty() {
@@ -621,12 +647,16 @@ impl App {
             }
         });
 
-        ui.add_space(6.0);
-        ui.label(RichText::new("頻道").strong());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            style::section_title(ui, "頻道");
+            style::badge(ui, format!("{} 個", snap.channels.len()), style::accent_text(ui));
+        });
         self.drive_pending_apply(snap);
         self.presets_bar(ui, snap);
         for ch in &snap.channels {
             self.channel_card(ui, ch, snap.is_host);
+            ui.add_space(2.0);
         }
         // 新增頻道
         ui.horizontal(|ui| {
@@ -704,18 +734,8 @@ impl App {
 
         // 音量條：-70..0 dB
         let frac = |db: f32| ((db + 70.0) / 70.0).clamp(0.0, 1.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 16.0), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
-        let mut fill = rect;
-        fill.set_right(rect.left() + rect.width() * frac(r.level_db));
-        p.rect_filled(fill, 3.0, if r.voiced { GREEN } else { BLUE });
-        let mark = |db: f32, color: Color32| {
-            let x = rect.left() + rect.width() * frac(db);
-            p.line_segment([egui::pos2(x, rect.top() - 2.0), egui::pos2(x, rect.bottom() + 2.0)], egui::Stroke::new(2.0, color));
-        };
-        mark(r.noise_db, Color32::GRAY);
-        mark(self.settings.gate_dbfs, AMBER);
+        let marks = [(frac(r.noise_db), style::muted(ui)), (frac(self.settings.gate_dbfs), AMBER)];
+        style::meter(ui, frac(r.level_db), r.voiced, false, 14.0, &marks);
 
         ui.horizontal(|ui| {
             if r.voiced {
@@ -980,8 +1000,11 @@ impl App {
                         self.renaming = None;
                     }
                 } else {
-                    ui.label(RichText::new(&ch.name).strong());
-                    ui.weak(format!("{} 人", ch.members.len()));
+                    style::channel_icon(ui, joined, speaking);
+                    ui.label(RichText::new(&ch.name).strong().size(16.0));
+                    if !ch.members.is_empty() {
+                        style::badge(ui, format!("{} 人", ch.members.len()), style::accent_text(ui));
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // 房主管理：刪除要按兩次（3 秒內）
@@ -1004,18 +1027,16 @@ impl App {
                         }
                         ui.add_space(6.0);
                     }
-                    if joined {
-                        if ui.small_button("離開").clicked() {
-                            let _ = s.set_channel(ch.id, None);
-                        }
-                    } else if ui.small_button("加入").clicked() {
-                        let _ = s.set_channel(ch.id, Some(join_cfg(&self.settings, s, &ch.name)));
+                    if style::join_button(ui, joined).clicked() {
+                        let cfg = if joined { None } else { Some(join_cfg(&self.settings, s, &ch.name)) };
+                        let _ = s.set_channel(ch.id, cfg);
                     }
                 });
             });
 
             if let Some(mut cfg) = ch.mine {
                 let before = cfg;
+                ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     style::toggle(ui, &mut cfg.listen, "收聽");
                     ui.label("說話");
@@ -1083,7 +1104,7 @@ impl App {
                 egui::CollapsingHeader::new(title).id_salt(("members", ch.id)).default_open(false).show(ui, |ui| {
                     for m in &ch.members {
                         ui.horizontal(|ui| {
-                            dot(ui, if m.speaking { GREEN } else { Color32::DARK_GRAY }, m.speaking);
+                            dot(ui, if m.speaking { GREEN } else { style::faint(ui) }, m.speaking);
                             if m.is_me {
                                 ui.label(RichText::new(format!("{}（我）", m.name)).strong());
                             } else {
@@ -1141,27 +1162,37 @@ impl App {
     }
 
     fn controls(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
-        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let w = (ui.available_width() - 16.0) / 3.0;
-            let toggle = |on: bool, on_text: &str, off_text: &str| {
-                let b = egui::Button::new(RichText::new(if on { on_text } else { off_text }).size(15.0))
-                    .min_size(egui::vec2(w, 34.0));
-                if on { b.fill(RED.gamma_multiply(0.6)) } else { b }
+            // 靜音、拒聽各佔一半，離開窄一點
+            let gap = ui.spacing().item_spacing.x;
+            let leave_w = 84.0;
+            let w = ((ui.available_width() - leave_w - 2.0 * gap) / 2.0).max(80.0);
+            let h = 40.0;
+            let kind = |on: bool| if on { Ctl::Off } else { Ctl::Normal };
+            let mute_text = if snap.muted { "已靜音" } else { "麥克風開" };
+            let mute = style::control_button(ui, Icon::Mic, mute_text, kind(snap.muted), egui::vec2(w, h));
+            let mute = if snap.deafened {
+                mute.on_hover_text("拒聽中麥克風也會關閉；按這裡會同時取消拒聽")
+            } else {
+                mute.on_hover_text(if snap.muted { "按一下打開麥克風" } else { "按一下靜音" })
             };
-            let mute = ui.add(toggle(snap.muted, "已靜音", "靜音"));
-            let mute = if snap.deafened { mute.on_hover_text("拒聽中麥克風也會關閉；按這裡會同時取消拒聽") } else { mute };
             if mute.clicked() {
                 if let Some(s) = &self.session {
                     s.set_muted(!snap.muted);
                 }
             }
-            if ui.add(toggle(snap.deafened, "已拒聽", "拒聽")).clicked() {
+            let deaf_text = if snap.deafened { "已拒聽" } else { "收聽中" };
+            let deaf = style::control_button(ui, Icon::Headphones, deaf_text, kind(snap.deafened), egui::vec2(w, h))
+                .on_hover_text(if snap.deafened { "按一下恢復收聽" } else { "按一下拒聽（不聽也不說）" });
+            if deaf.clicked() {
                 if let Some(s) = &self.session {
                     s.set_deafened(!snap.deafened);
                 }
             }
-            if ui.add(egui::Button::new(RichText::new("離開").size(15.0)).min_size(egui::vec2(w, 34.0))).clicked() {
+            if style::control_button(ui, Icon::Leave, "離開", Ctl::Danger, egui::vec2(leave_w, h))
+                .on_hover_text("離開房間")
+                .clicked()
+            {
                 self.leave();
             }
         });
@@ -1175,9 +1206,9 @@ impl App {
             Some(l) => format!("{:.1}%", l * 100.0),
             None => "—".into(),
         };
-        ui.weak(format!("{path}｜緩衝 {}｜遺失 {loss}｜欠載 {}", j.target, snap.underruns))
-            .on_hover_text("遺失：最近 5 秒收到的語音中，需要補償（FEC／PLC）的比例。持續超過 5% 會聽到斷斷續續");
         ui.add_space(2.0);
+        ui.label(RichText::new(format!("{path}｜緩衝 {}｜遺失 {loss}｜欠載 {}", j.target, snap.underruns)).small().weak())
+            .on_hover_text("遺失：最近 5 秒收到的語音中，需要補償（FEC／PLC）的比例。持續超過 5% 會聽到斷斷續續");
     }
 }
 
@@ -1228,7 +1259,9 @@ impl eframe::App for App {
         }
         self.poll_recording(snap.as_ref());
         if let Some(snap) = &snap {
-            egui::Panel::bottom("controls").show(ui, |ui| self.controls(ui, snap));
+            egui::Panel::bottom("controls")
+                .frame(style::dock_frame(ui))
+                .show(ui, |ui| self.controls(ui, snap));
         }
         if let Some(rx) = &self.update_rx
             && let Ok(r) = rx.try_recv()
@@ -1240,7 +1273,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             self.update_banner(ui, snap.as_ref());
             ui.horizontal(|ui| {
-                ui.heading("MultiVoice");
+                style::brand(ui);
                 if let Some(s) = &self.session {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let name = s.input_name();
@@ -1252,7 +1285,7 @@ impl eframe::App for App {
                     });
                 }
             });
-            ui.separator();
+            ui.add_space(4.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match &snap {
                 Some(snap) => self.room(ui, snap),
                 None => self.lobby(ui),
