@@ -4,7 +4,7 @@
 //
 // 有版本資訊（產品名稱、說明、版本、來源網址）與圖示的執行檔，看起來比較像正常的軟體，
 // 一般認為比較不會被防毒軟體的機器學習模型誤判（例如 Windows Defender 的 `Trojan:Win32/Bearfoos.A!ml`）。
-// 圖示用 icon_shape.rs 畫（跟視窗、系統匣同一份），不需要圖檔。
+// 圖示用 icon_shape.rs 畫（跟視窗圖示、網頁版 icon.svg 同圖案），不需要圖檔。
 // 需要 windres（GNU 工具鏈附的；這台電腦在 WinLibs 裡）。呼叫端要先宣告 `mod icon_shape`。
 
 #[allow(dead_code)]
@@ -103,7 +103,7 @@ fn make_ico(sizes: &[usize]) -> Vec<u8> {
     let images: Vec<Vec<u8>> = sizes
         .iter()
         .map(|&n| {
-            let rgba = icon_shape::icon_rgba(n, icon_shape::BRAND, false);
+            let rgba = icon_shape::app_icon_rgba(n);
             let mask_row = n.div_ceil(32) * 4;
             let mut d = Vec::new();
             for v in [40u32, n as u32, (n * 2) as u32] {

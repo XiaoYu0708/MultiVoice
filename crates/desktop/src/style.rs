@@ -479,9 +479,9 @@ pub fn setup(ctx: &egui::Context) {
     ctx.style_mut_of(egui::Theme::Light, |s| apply_palette(s, &LIGHT));
 }
 
-/// 視窗圖示：紫色圓角方塊上的白色麥克風（程式繪製，不需要圖檔）
+/// 視窗圖示：跟 exe、網頁版同一個圖案（程式繪製，不需要圖檔）
 pub fn icon() -> egui::IconData {
-    egui::IconData { rgba: icon_rgba(64, crate::icon_shape::BRAND, false), width: 64, height: 64 }
+    egui::IconData { rgba: crate::icon_shape::app_icon_rgba(128), width: 128, height: 128 }
 }
 
 pub use crate::icon_shape::icon_rgba;
@@ -493,6 +493,9 @@ mod tests {
     #[ignore]
     fn dump_icons() {
         let dir = std::env::var("ICON_DUMP").expect("請設定 ICON_DUMP");
+        for n in [16usize, 32, 48, 256] {
+            std::fs::write(format!("{dir}/app_{n}.rgba"), crate::icon_shape::app_icon_rgba(n)).unwrap();
+        }
         for n in [16usize, 20, 24, 32] {
             for (i, bg) in [[128, 128, 128], [124, 58, 237], [34, 197, 94], [244, 63, 94]].into_iter().enumerate() {
                 std::fs::write(format!("{dir}/icon_{n}_{i}.rgba"), super::icon_rgba(n, bg, i == 3)).unwrap();
