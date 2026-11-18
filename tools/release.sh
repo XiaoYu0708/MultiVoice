@@ -50,7 +50,8 @@ echo "等 GitHub Actions 建置…"
 RUN=""
 for _ in $(seq 30); do
   sleep 5
-  RUN=$(gh run list --workflow release.yml --event push --branch "v$VER" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  # 用 commit 篩選：同一個版本號取消後重發時，--branch 會抓到之前被取消的那次
+  RUN=$(gh run list --workflow release.yml --event push --branch "v$VER" --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
   [ -n "$RUN" ] && break
 done
 if [ -z "$RUN" ]; then
