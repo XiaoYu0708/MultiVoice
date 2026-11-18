@@ -500,11 +500,6 @@ impl App {
             self.outputs = audio::device::list_devices(false);
         }
 
-        ui.add_space(6.0);
-        ui.label("加入頻道時預設的說話方式");
-        ui.radio_value(&mut self.settings.open_mic, false, "偵測到說話才送出（建議）");
-        ui.radio_value(&mut self.settings.open_mic, true, "一直開麥");
-        ui.weak("每個頻道可以在頻道列表裡個別調整");
 
         ui.add_space(6.0);
         style::toggle(ui, &mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
@@ -1044,7 +1039,7 @@ impl App {
                         .width(110.0)
                         .selected_text(talk_label(cfg.talk))
                         .show_ui(ui, |ui| {
-                            for m in [TalkMode::Off, TalkMode::Voice, TalkMode::Open, TalkMode::Ptt] {
+                            for m in [TalkMode::Off, TalkMode::Voice, TalkMode::Ptt] {
                                 ui.selectable_value(&mut cfg.talk, m, talk_label(m));
                             }
                         });

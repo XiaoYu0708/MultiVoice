@@ -7,7 +7,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('mv.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('mv.' + k, JSON.stringify(v)); } catch {} },
 };
-const MODE_LABEL = { vad: '偵測說話', open: '一直開麥', ptt: '按住說話', off: '不說話' };
+const MODE_LABEL = { vad: '偵測說話', ptt: '按住說話', off: '不說話' };
 const split = (m) => [Number(m & 0xffffffffn), Number(m >> 32n)];
 const join64 = (lo, hi) => (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
 
@@ -438,7 +438,9 @@ function joinChannel(id) {
   if (!ch) return;
   const pref = chanPrefs()[ch.name] ?? {};
   // 加入頻道就是在收聽（不想聽就離開頻道），跟桌面版一樣不另外提供「收聽」開關
-  const cfg = { mode: pref.mode ?? 'vad', listen: true, volume: pref.volume ?? 1 };
+  // 「一直開麥」已拿掉：舊版存的 open 改成偵測說話
+  const mode = pref.mode && pref.mode !== 'open' ? pref.mode : 'vad';
+  const cfg = { mode, listen: true, volume: pref.volume ?? 1 };
   try {
     room.subscribe(id, cfg.listen, cfg.mode !== 'off');
     joined.set(id, cfg);

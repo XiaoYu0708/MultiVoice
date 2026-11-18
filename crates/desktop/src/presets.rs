@@ -58,8 +58,8 @@ fn talk_str(t: TalkMode) -> &'static str {
 fn parse_talk(s: &str) -> TalkMode {
     match s {
         "off" => TalkMode::Off,
-        "open" => TalkMode::Open,
         "ptt" => TalkMode::Ptt,
+        // 「一直開麥」已從介面拿掉：舊設定檔的 open 也改成偵測說話
         _ => TalkMode::Voice,
     }
 }

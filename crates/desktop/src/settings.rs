@@ -12,8 +12,6 @@ pub struct Settings {
     /// None = 系統預設裝置
     pub input_device: Option<String>,
     pub output_device: Option<String>,
-    /// true = 一直開麥；false = 偵測到說話才送出
-    pub open_mic: bool,
     pub denoise: bool,
     /// 降噪時人聲混回原音的比例
     pub speech_mix: f32,
@@ -57,7 +55,6 @@ impl Default for Settings {
             name: std::env::var("USERNAME").unwrap_or_else(|_| "玩家".into()),
             input_device: None,
             output_device: None,
-            open_mic: false,
             denoise: true,
             speech_mix: 0.3,
             gate_dbfs: -50.0,
@@ -128,7 +125,6 @@ impl Settings {
         session::AudioOpts {
             input: self.input_device.clone(),
             output: self.output_device.clone(),
-            open_mic: self.open_mic,
             denoise: self.denoise,
             mix: self.speech_mix,
             gate_dbfs: self.gate_dbfs,

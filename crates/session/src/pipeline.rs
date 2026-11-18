@@ -91,7 +91,7 @@ pub enum TalkMode {
     Off,
     /// 偵測到說話才送出
     Voice,
-    /// 一直開麥
+    /// 一直開麥（介面已拿掉，只剩 CLI 自動測試 `--open-mic`／`--channel` 用）
     Open,
     /// 按住 [`ChannelCfg::ptt_key`] 才說話（不經過 VAD）
     Ptt,
