@@ -15,6 +15,11 @@ gvg.xiaoyu0708.ip-ddns.com {
 	reverse_proxy host.docker.internal:8766
 }
 
+modhelmx.xiaoyu0708.ip-ddns.com {
+	# ModHelmX Web 後台跑在樹莓派（區網 192.168.0.4:8001），這裡只負責 HTTPS
+	reverse_proxy 192.168.0.4:8001
+}
+
 relay.xiaoyu0708.ip-ddns.com {
 	# iroh-relay 在設定了 TLS（為了 QAD）時，relay 服務只跑在它自己的 HTTPS 埠，
 	# 所以這裡以 HTTPS 轉給它；它用的憑證就是 Caddy 這個主機名稱的憑證
