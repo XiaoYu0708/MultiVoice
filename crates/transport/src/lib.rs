@@ -31,7 +31,7 @@ fn own_relay_config(url: RelayUrl) -> RelayConfig {
 }
 
 /// 網頁版客戶端（PLAN.md §8）。邀請連結 = 這個網址 + `#` + 邀請票（票不會傳到網站）
-pub const WEB_CLIENT_URL: &str = "https://voice.xiaoyu0708.ip-ddns.com/";
+pub const WEB_CLIENT_URL: &str = "https://multivoice.xiaoyu0708.ip-ddns.com/";
 
 #[derive(Clone, Debug)]
 pub enum RelaySetup {

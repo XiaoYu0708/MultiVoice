@@ -2,7 +2,7 @@
 # 建置網頁版客戶端到 dist/web/（純靜態檔案）。
 #
 #   tools/build-web.sh            建置
-#   tools/build-web.sh --deploy   建置後複製到 deploy/web/（Caddy 直接提供 https://voice.<網域>/）
+#   tools/build-web.sh --deploy   建置後複製到 deploy/web/（Caddy 直接提供 https://multivoice.<網域>/）
 #   tools/build-web.sh --serve    建置後在 http://127.0.0.1:8080/ 開本機測試伺服器（localhost 才能用麥克風）
 #
 # 需要：rustup target add wasm32-unknown-unknown、wasm-bindgen-cli（版本要和 Cargo.lock 的 wasm-bindgen 相同）、

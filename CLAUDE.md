@@ -105,10 +105,10 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - **UI 自動點擊前一定要確認 MultiVoice 是前景視窗**，否則會點到使用者的其他視窗；使用者正在用電腦時（例如剪貼簿內容變了）就停止自動點擊
 - 測試會在 `%APPDATA%\MultiVoice\` 產生 `identity-<profile>.key`、`settings-<profile>.toml`，**測完要刪掉測試用的**（保留 `identity-default.key`、`identity-test2.key`、`settings.toml`）。
 - **網頁版驗證**：`node tools/headless.mjs <網址> <秒> [--mobile] --eval "js" --eval sleep:N --shot 圖.png`（無頭 Chrome、假麥克風、自動允許權限；不需要 Chrome 擴充功能）。搭配背景的 CLI 房主與 `tools/build-web.sh --serve`
-- 網頁版的部署（`--deploy`，會公開到 voice.<網域>）**要先問使用者**
+- 網頁版的部署（`--deploy`，會公開到 multivoice.<網域>）**要先問使用者**
 - egui 字型是微軟正黑體，**沒有 emoji**（會顯示成方框），UI 不要用 emoji。
 
 ## 使用者的網路環境
 - 固定公開 IP，路由器已轉發 TCP 80/443、UDP 7842 → 這台電腦
-- 網域 `xiaoyu0708.ip-ddns.com`（ClouDNS 免費網域，DNS 在 Cloudflare；`voice.`／`relay.` 是灰雲 A 紀錄；根網域是使用者的 GitHub Pages，不要動）
+- 網域 `xiaoyu0708.ip-ddns.com`（ClouDNS 免費網域，DNS 在 Cloudflare；`multivoice.`（網頁版）／`relay.` 是灰雲 A 紀錄；根網域是使用者的 GitHub Pages，不要動）
 - 同一台電腦的 Docker 還跑著使用者的其他服務，重啟 Docker Desktop 前要先問

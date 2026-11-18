@@ -631,8 +631,10 @@ impl App {
                 });
             });
             let db = 20.0 * snap.mic_peak.max(1e-6).log10();
-            let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
-            style::meter(ui, frac, snap.tx_active && !snap.muted, snap.muted || !snap.has_mic, 8.0, &[]);
+            // 麥克風關閉（靜音／拒聽）或沒有麥克風時音量條不動
+            let mic_off = snap.muted || !snap.has_mic;
+            let frac = if mic_off { 0.0 } else { ((db + 60.0) / 60.0).clamp(0.0, 1.0) };
+            style::meter(ui, frac, snap.tx_active && !mic_off, mic_off, 8.0, &[]);
             if !snap.has_mic {
                 ui.weak("插上麥克風後會自動開啟，不用重新進房");
             } else if snap.talking_to.is_empty() {

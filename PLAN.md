@@ -364,7 +364,7 @@ on voice datagram from S with target_id t:
                   │  TCP 80/443、UDP <relay QAD 埠>、UDP <host 埠>
 ┌─────────────────┴──── 這台電腦 (Docker Desktop) ───────────────────┐
 │  caddy        自動申請 Let's Encrypt 憑證、HTTPS 終結                 │
-│   ├─ https://voice.<網域>/   → 網頁客戶端靜態檔                       │
+│   ├─ https://multivoice.<網域>/ → 網頁客戶端靜態檔                     │
 │   └─ https://relay.<網域>/   → iroh-relay（WebSocket 反向代理）       │
 │  iroh-relay   自架 relay：網頁成員、打洞失敗的成員都走這裡，無限流     │
 │  headless-host 常駐房主：can_host、候補第一，平常就由它轉發             │
@@ -381,7 +381,7 @@ on voice datagram from S with target_id t:
 - **網域：`xiaoyu0708.ip-ddns.com`**（ClouDNS 免費網域，**NS 已委派給 Cloudflare**，所以 DNS 紀錄在 Cloudflare 後台管理）。
   - 根網域目前指向 GitHub Pages（既有網站，**不要動**）。本專案只新增兩個子網域：
     ```
-    voice.xiaoyu0708.ip-ddns.com   A   <固定 IP>   Proxy: DNS only（灰雲）
+    multivoice.xiaoyu0708.ip-ddns.com   A   <固定 IP>   Proxy: DNS only（灰雲）
     relay.xiaoyu0708.ip-ddns.com   A   <固定 IP>   Proxy: DNS only（灰雲）
     ```
   - **一定要設成灰雲（DNS only）**：`relay` 除了 WSS，還有 UDP 位址探測（QAD），而 Cloudflare 代理不轉送任意 UDP；客戶端也需要拿到真實 IP。`voice` 也用灰雲，讓 Caddy 直接處理憑證，比較單純。
@@ -406,7 +406,7 @@ on voice datagram from S with target_id t:
 | 編解碼 | 支援 WebCodecs `AudioEncoder/AudioDecoder`（Opus）時優先使用，否則改用 libopus 編成的 WASM |
 | 混音 | AudioWorklet 內跑 `mixer-core`（per-channel 音量／pan／ducking 與桌面版一致） |
 | PTT | 畫面上每個頻道一顆大按鈕 + 全域廣播鈕；預設用 VAD 常開 |
-| 託管 | 純靜態檔案，由這台電腦的 Caddy 以 HTTPS 提供（`https://voice.<網域>/`，見 §7.3）；備案為 GitHub Pages / Cloudflare Pages。getUserMedia、WebCodecs、AudioWorklet 都**必須在 HTTPS 下**才能用 |
+| 託管 | 純靜態檔案，由這台電腦的 Caddy 以 HTTPS 提供（`https://multivoice.<網域>/`，見 §7.3）；備案為 GitHub Pages / Cloudflare Pages。getUserMedia、WebCodecs、AudioWorklet 都**必須在 HTTPS 下**才能用 |
 | 邀請連結 | `https://<網頁>/#<room ticket>`：票放在 `#` 後面，不會傳到託管網站 |
 | 安裝 | PWA，可加到主畫面 |
 

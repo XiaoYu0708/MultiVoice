@@ -1,7 +1,7 @@
 # 主機名稱都由 Caddy 自動申請、續期 Let's Encrypt 憑證
-# DNS（Cloudflare，灰雲）：voice / relay / gvg 三筆 A 紀錄指向本機固定 IP
+# DNS（Cloudflare，灰雲）：multivoice / relay / gvg 的 A 紀錄指向本機固定 IP
 
-voice.xiaoyu0708.ip-ddns.com {
+multivoice.xiaoyu0708.ip-ddns.com {
 	root * /srv/web
 	# wasm 約 3 MB，壓縮後約 1 MB
 	encode zstd gzip

@@ -684,8 +684,10 @@ function renderAudio() {
   $('#meter-gate').style.left = pos(settings.gate) + '%';
   if (st) {
     const fill = $('#meter-fill');
-    fill.style.width = (micStream ? pos(st.level) : 0) + '%';
-    fill.classList.toggle('voiced', st.voiced);
+    // 麥克風關閉（靜音／拒聽）或沒有麥克風時音量條不動
+    const micOff = !micStream || muted || deafened;
+    fill.style.width = (micOff ? 0 : pos(st.level)) + '%';
+    fill.classList.toggle('voiced', !micOff && st.voiced);
     const to = state.channels.filter((c) => c.slot != null && (st.tx & (1n << BigInt(c.slot)))).map((c) => c.name);
     const paused = ctx && ctx.state !== 'running';
     const micPaused = micStream?.getAudioTracks()[0]?.muted;
