@@ -1,5 +1,5 @@
-# 兩個主機名稱都由 Caddy 自動申請、續期 Let's Encrypt 憑證
-# DNS（Cloudflare，灰雲）：voice / relay 兩筆 A 紀錄指向本機固定 IP
+# 主機名稱都由 Caddy 自動申請、續期 Let's Encrypt 憑證
+# DNS（Cloudflare，灰雲）：voice / relay / gvg 三筆 A 紀錄指向本機固定 IP
 
 voice.xiaoyu0708.ip-ddns.com {
 	root * /srv/web
@@ -8,6 +8,11 @@ voice.xiaoyu0708.ip-ddns.com {
 	# 每次都向伺服器確認有沒有新版（有 ETag，沒變只回 304），部署後大家馬上拿到新版
 	header Cache-Control "no-cache"
 	file_server
+}
+
+gvg.xiaoyu0708.ip-ddns.com {
+	# 百業戰語音機器人（另一個 docker compose 專案，埠 8766 發佈在本機）
+	reverse_proxy host.docker.internal:8766
 }
 
 relay.xiaoyu0708.ip-ddns.com {
