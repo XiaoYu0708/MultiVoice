@@ -103,7 +103,7 @@ fn make_ico(sizes: &[usize]) -> Vec<u8> {
     let images: Vec<Vec<u8>> = sizes
         .iter()
         .map(|&n| {
-            let rgba = icon_shape::icon_rgba(n, [66, 120, 220], false);
+            let rgba = icon_shape::icon_rgba(n, icon_shape::BRAND, false);
             let mask_row = n.div_ceil(32) * 4;
             let mut d = Vec::new();
             for v in [40u32, n as u32, (n * 2) as u32] {

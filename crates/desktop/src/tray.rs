@@ -138,7 +138,7 @@ unsafe fn make_icon(look: Look) -> HICON {
     let n = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as usize;
     let bg = match look {
         Look::Idle => [128, 128, 128],
-        Look::InRoom => [124, 58, 237],
+        Look::InRoom => crate::icon_shape::BRAND,
         Look::Talking => [34, 197, 94],
         Look::Muted => [244, 63, 94],
     };

@@ -481,7 +481,7 @@ pub fn setup(ctx: &egui::Context) {
 
 /// 視窗圖示：紫色圓角方塊上的白色麥克風（程式繪製，不需要圖檔）
 pub fn icon() -> egui::IconData {
-    egui::IconData { rgba: icon_rgba(64, [124, 58, 237], false), width: 64, height: 64 }
+    egui::IconData { rgba: icon_rgba(64, crate::icon_shape::BRAND, false), width: 64, height: 64 }
 }
 
 pub use crate::icon_shape::icon_rgba;
