@@ -264,6 +264,8 @@ pub enum Icon {
     Headphones,
     Leave,
     Hash,
+    /// 房主（Lucide crown）
+    Crown,
 }
 
 /// 在 `rect`（正方形）裡畫圖示；`slash`：加一條斜線（關閉）
@@ -296,6 +298,13 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             painter.add(egui::Shape::line(vec![at(0.42, 0.12), at(0.16, 0.12), at(0.16, 0.88), at(0.42, 0.88)], st));
             painter.line_segment([at(0.4, 0.5), at(0.88, 0.5)], st);
             painter.add(egui::Shape::line(vec![at(0.68, 0.3), at(0.88, 0.5), at(0.68, 0.7)], st));
+        }
+        Icon::Crown => {
+            // Lucide crown（24 格座標）：五角的皇冠 + 底線
+            let g = |x: f32, y: f32| at(x / 24.0, y / 24.0);
+            let crown = vec![g(2.5, 6.0), g(5.3, 16.5), g(18.7, 16.5), g(21.5, 6.0), g(16.2, 10.0), g(12.0, 3.5), g(7.8, 10.0)];
+            painter.add(egui::Shape::closed_line(crown, st));
+            painter.line_segment([g(5.0, 20.5), g(19.0, 20.5)], st);
         }
         Icon::Hash => {
             for (a, b) in [
@@ -389,6 +398,43 @@ pub fn badge(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) -> egui
         painter.galley(rect.center() - galley.size() / 2.0, galley, color);
     }
     resp
+}
+
+/// 房主圖示（皇冠，琥珀色）：只有圖示，滑鼠移上去說明是房主（圖示本身沒有文字，要有說明）
+pub fn owner_icon(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        paint_icon(ui.painter(), rect, Icon::Crown, AMBER, false, Color32::TRANSPARENT);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "房主"));
+    resp.on_hover_text("房主：可以改名、刪除頻道、移出成員、更換邀請")
+}
+
+/// 狀態列的房主標記：皇冠 + 名字（`None` = 房主不在房間裡，皇冠變灰）
+pub fn owner_chip(ui: &mut egui::Ui, name: Option<&str>) -> egui::Response {
+    let color = if name.is_some() { AMBER } else { faint(ui) };
+    let font = egui::FontId::proportional(12.5);
+    let galley = ui.painter().layout_no_wrap(name.unwrap_or("").to_string(), font, color);
+    let icon = 14.0;
+    let gap = if name.is_some() { 4.0 } else { 0.0 };
+    let size = vec2(8.0 + icon + gap + galley.size().x + 8.0, galley.size().y.max(icon) + 6.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect(rect, rect.height() / 2.0, color.gamma_multiply(0.14), Stroke::new(1.0, color.gamma_multiply(0.4)), egui::StrokeKind::Inside);
+        let ir = Rect::from_min_size(pos2(rect.left() + 8.0, rect.center().y - icon / 2.0), vec2(icon, icon));
+        paint_icon(painter, ir, Icon::Crown, color, false, Color32::TRANSPARENT);
+        painter.galley(pos2(ir.right() + gap, rect.center().y - galley.size().y / 2.0), galley, color);
+    }
+    let label = match name {
+        Some(n) => format!("房主：{n}"),
+        None => "房主不在房間裡".to_string(),
+    };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, label.clone()));
+    resp.on_hover_text(match name {
+        Some(_) => format!("{label}（可以改名、刪除頻道、移出成員、更換邀請）"),
+        None => "房主不在房間裡：改名、刪除頻道、移出成員要等他回來".to_string(),
+    })
 }
 
 /// 區段標題（例如「頻道」）

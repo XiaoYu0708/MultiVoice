@@ -146,12 +146,21 @@ impl Room {
             })
             .collect();
         let path = c.path().map(|(relay, rtt)| json!({ "relay": relay, "rtt": rtt }));
+        // 房主的成員編號（不在房間裡時 null）
+        let owner = c.owner().and_then(|o| {
+            if o == c.node_id() {
+                Some(me)
+            } else {
+                c.members().iter().find(|m| m.node_id == o).map(|m| m.session_idx)
+            }
+        });
         json!({
             "me": me,
             "members": members,
             "channels": channels,
             "rtt": *self.inner.rtt.borrow(),
             "path": path,
+            "owner": owner,
             "recovering": *self.inner.recovering.borrow(),
         })
         .to_string()

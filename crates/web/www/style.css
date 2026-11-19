@@ -106,6 +106,11 @@ h3 { font-size: 1.05rem; font-weight: 700; }
   white-space: nowrap;
 }
 .badge:empty { display: none; }
+.badge.owner { background: color-mix(in srgb, var(--amber) 16%, transparent); border-color: color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); }
+.badge.owner.absent { background: transparent; border-color: var(--line); color: var(--muted); }
+.badge.owner .ic { width: 14px; height: 14px; }
+.badge.owner.absent #owner-name { display: none; }
+.head-badges { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; }
 
 /* ---------------------------------------------------------------- 加入畫面 */
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 28px 0 4px; }
@@ -461,6 +466,7 @@ button.icon-only { width: 44px; padding: 0; }
 }
 .chips li.speaking::before { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 35%, transparent); }
 .chips li .tag { color: var(--muted); }
+.chips li .owner-ic { width: 15px; height: 15px; color: var(--amber); flex: none; }
 .chips li[data-idx] { cursor: context-menu; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 
 .ch-controls { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; }

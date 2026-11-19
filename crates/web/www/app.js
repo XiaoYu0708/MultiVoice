@@ -560,6 +560,20 @@ function bindVolumeGestures(list) {
 }
 
 // ---------------------------------------------------------------- rendering
+/** 房主的皇冠圖示（Lucide crown） */
+function crownIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'ic owner-ic');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', '房主');
+  const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+  title.textContent = '房主';
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-crown');
+  svg.append(title, use);
+  return svg;
+}
+
 function memberName(idx) {
   return state.members.find((m) => m.idx === idx)?.name ?? `#${idx}`;
 }
@@ -575,6 +589,13 @@ function renderRoom() {
     $('#conn-text').textContent = `已連線（${via}${rtt}）`;
   }
   $('#member-count').textContent = `${state.members.length} 人在房間`;
+  // 房主是誰（所有人都看得到）：皇冠圖示 + 名字；不在房間裡時皇冠變灰。圖示沒有文字，用 aria-label／title 說明
+  const ownerName = state.owner == null ? '' : state.owner === state.me ? '你' : memberName(state.owner);
+  const ownerLabel = state.owner == null ? '房主不在房間裡' : `房主：${ownerName}`;
+  $('#owner-name').textContent = ownerName;
+  $('#owner-badge').setAttribute('aria-label', ownerLabel);
+  $('#owner-badge').title = ownerLabel;
+  $('#owner-badge').classList.toggle('absent', state.owner == null);
 
   const seen = new Set();
   const list = $('#channels');
@@ -648,6 +669,8 @@ function updateCard(card, ch) {
     const name = memberName(m.idx);
     li.textContent = name;
     if (m.idx === state.me) li.classList.add('me');
+    // 房主：名字後面加皇冠圖示（有 aria-label／title，不只靠顏色）
+    if (m.idx === state.owner) li.append(crownIcon());
     const g = m.idx === state.me ? undefined : memberVolumes[name];
     const tag = [!m.talk ? '只聽' : !m.listen ? '不聽' : '', g !== undefined && g !== 1 ? pct(g) : ''].filter(Boolean).join(' ');
     if (tag) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = tag; li.append(t); }

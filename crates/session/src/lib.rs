@@ -123,6 +123,8 @@ pub struct ChannelMemberView {
     pub is_me: bool,
     /// 能當轉發者（桌面版）：房主只能交給這些人
     pub can_own: bool,
+    /// 他是房主（所有人都看得到）
+    pub is_owner: bool,
     pub listen: bool,
     pub talk: bool,
     /// 正在這個頻道說話
@@ -483,6 +485,15 @@ impl Session {
         self.client.delete_channel(channel);
     }
 
+    /// 房主的成員編號（不在房間裡、或不限制時 None）
+    fn owner_idx(&self) -> Option<SessionIdx> {
+        let o = self.client.owner()?;
+        if o == self.client.node_id() {
+            return Some(self.client.session_idx());
+        }
+        self.client.members().into_iter().find(|m| m.node_id == o).map(|m| m.session_idx)
+    }
+
     /// 房主：移出成員（同時更換邀請）
     pub fn kick(&self, idx: SessionIdx) {
         self.room.lock().unwrap().kicking = Some(idx);
@@ -514,6 +525,7 @@ impl Session {
 
         let cfgs = self.shared.channel_cfgs();
         let subs = self.client.subscriptions();
+        let owner_idx = self.owner_idx();
         let channels = self
             .client
             .channels()
@@ -534,6 +546,7 @@ impl Session {
                             name: if is_me { self.name.clone() } else { names.get(&s.session_idx).cloned().unwrap_or_default() },
                             is_me,
                             can_own: !is_me && self.client.can_relay(s.session_idx),
+                            is_owner: owner_idx == Some(s.session_idx),
                             listen: s.listen,
                             talk: s.talk,
                             speaking,

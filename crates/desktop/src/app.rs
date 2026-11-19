@@ -598,10 +598,13 @@ impl App {
                 } else {
                     dot(ui, GREEN, false);
                     ui.label(RichText::new("已連線").strong());
-                    if snap.is_owner {
-                        style::badge(ui, "房主", AMBER);
-                    }
                 }
+                // 房主：皇冠圖示 + 名字（房主自己看到「你」）
+                match (snap.is_owner, &snap.owner_name) {
+                    (true, _) => style::owner_chip(ui, Some("你")),
+                    (false, Some(n)) => style::owner_chip(ui, Some(n)),
+                    (false, None) => style::owner_chip(ui, None),
+                };
                 style::badge(ui, format!("{} 人", snap.members.len() + 1), style::accent_text(ui));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // 邀請連結 = 網頁版網址 + `#` + 邀請票：桌面版貼上也能加入，所以只給連結
@@ -625,11 +628,8 @@ impl App {
             if let Some((text, error)) = &snap.notice {
                 ui.colored_label(if *error { AMBER } else { GREEN }, text);
             }
-            if !snap.is_owner {
-                match &snap.owner_name {
-                    Some(n) => ui.weak(format!("房主：{n}")),
-                    None => ui.weak("房主不在房間裡（改名、刪除頻道要等他回來）"),
-                };
+            if !snap.is_owner && snap.owner_name.is_none() {
+                ui.weak("房主不在房間裡：改名、刪除頻道、移出成員要等他回來");
             }
             // 轉發負載（PLAN §6.4）：語音由我轉發給大家，上傳被吃掉太多時可以讓給別人（房主不變）
             if let Some(load) = snap.host_load {
@@ -1149,11 +1149,17 @@ impl App {
                             dot(ui, if m.speaking { GREEN } else { style::faint(ui) }, m.speaking);
                             if m.is_me {
                                 ui.label(RichText::new(format!("{}（我）", m.name)).strong());
+                                if m.is_owner {
+                                    style::owner_icon(ui);
+                                }
                             } else {
                                 let gain = volumes.get(&m.name).copied().unwrap_or(1.0);
                                 let r = ui
                                     .add(egui::Label::new(&m.name).sense(egui::Sense::click()))
                                     .on_hover_text("右鍵：調整聽這個人的音量");
+                                if m.is_owner {
+                                    style::owner_icon(ui);
+                                }
                                 if gain != 1.0 {
                                     ui.colored_label(if gain == 0.0 { RED } else { AMBER }, pct(gain));
                                 }
