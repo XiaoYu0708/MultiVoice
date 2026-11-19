@@ -38,7 +38,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 ## 架構（crates/）
 | crate | 用途 |
 |---|---|
-| `protocol` | 協定 v4（v3 房主轉移、v4 雙房主合併）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
+| `protocol` | 協定 v5（v3 房主轉移、v4 雙房主合併、v5 房主跟著開房的人＋踢人＋更換邀請）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
 | `audio` | cpal 裝置（輸出為**立體聲**交錯、熱插拔偵測）、重取樣（`resample`）、Opus（libopus 1.6.1）、前端處理 `frontend`（RNNoise／DeepFilterNet3 降噪、VAD、AGC）、`list_devices`；`audio::denoise` 轉出 mixer-core 的 |
 | `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking）、說話遮罩與提示音（`talk`）、RNNoise 降噪＋人聲混回（`denoise`）——桌面與網頁共用 |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
@@ -74,7 +74,12 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵
 - 房間畫面不要有獨立的「語音設定」區塊，設定放在各頻道卡片裡
 - 不做置頂「誰在說話」小視窗（做過後移除）
-- **M6（角色、踢人、封鎖、房間沉睡）不做**；已完成的「只有房主能改名／刪除頻道」、頻道改名後設定跟著走、relay 權杖保留
+- **M6 只做一部分**：不做身分組、封鎖名單、房間沉睡。已做的：
+  - 「房主」＝管理者，是**開房的人**（不是負責轉發的那台；轉發者叫「轉發」，會自動換人，UI 的「讓出轉發」只換轉發者）。
+    開房的人離開後沒人能管，同一台、同一個設定檔回來就恢復
+  - 房主才能改名／刪除頻道、移出成員、更換邀請、把房主交給別人（成員右鍵選單）；**只能交給桌面版成員**（網頁版不能當轉發者，所以也不能當房主）
+  - **移出成員一定同時更換邀請**（新密鑰只發給其他人，不需要封鎖名單）；複製邀請連結大家都可以
+  - 頻道改名後設定跟著走、relay 權杖保留
 - 網頁版：加入頻道就是收聽（不要「收聽」勾選）；不要浮動視窗與「背景只收聽」（改用 WebRTC 通話讓手機背景可說可聽）
 - 桌面版與網頁版進房時麥克風預設靜音
 
@@ -83,7 +88,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 使用者實測還沒回報的：遊戲中按鍵說話（含遊戲以系統管理員執行）、USB 耳機熱插拔、AGC／說話門檻聽感、Android 網頁版背景
 
 ## 測試與驗證方式
-- `cargo test --workspace`（目前 80 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
+- `cargo test --workspace`（目前 85 個；房主轉移整合測試在 `crates/session/tests/takeover.rs`；整合測試在 `crates/client-core/tests/room.rs`，關閉 relay、只走本機直連）
 - session 層：`cargo run -p session --example multichannel --release`、`--example switch_device`
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率

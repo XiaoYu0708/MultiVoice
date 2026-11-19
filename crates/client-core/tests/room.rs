@@ -36,7 +36,7 @@ async fn start_room_owned(owner: Option<NodeId>) -> Result<Room> {
         secret: RoomSecret(transport::random_bytes()),
         bootstrap: vec![transport::node_id(&host_ep.id())],
     };
-    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner, seed: None });
+    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner, local: None, seed: None });
     tokio::spawn({
         let host = host.clone();
         let ep = host_ep.clone();
@@ -357,5 +357,132 @@ async fn reconnect_keeps_session_idx() -> Result<()> {
     let again = member(&room, "小明", key).await?;
     assert_eq!(again.c.session_idx(), idx);
     assert_ne!(other.c.session_idx(), idx);
+    Ok(())
+}
+
+/// 等到符合條件的事件（略過其他事件）
+async fn wait_for(rx: &mut UnboundedReceiver<ClientEvent>, f: impl Fn(&ClientEvent) -> bool) -> ClientEvent {
+    loop {
+        let e = next_event(rx).await;
+        if f(&e) {
+            return e;
+        }
+    }
+}
+
+async fn wait_forbidden(rx: &mut UnboundedReceiver<ClientEvent>) {
+    match wait_for(rx, |e| matches!(e, ClientEvent::HostError(..))).await {
+        ClientEvent::HostError(code, _) => assert_eq!(code, ErrorCode::Forbidden),
+        _ => unreachable!(),
+    }
+}
+
+async fn join_err(room: &Room, key: SecretKey) -> String {
+    match member(room, "回來", key).await {
+        Ok(_) => panic!("不該能加入"),
+        Err(e) => format!("{e:#}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_kicks_member_and_invite_changes() -> Result<()> {
+    let owner_key = transport::generate_secret();
+    let owner = transport::node_id(&owner_key.public());
+    let mut room = start_room_owned(Some(owner)).await?;
+    let a = member(&room, "房主", owner_key).await?;
+    let b_key = transport::generate_secret();
+    let mut b = member(&room, "搗蛋", b_key.clone()).await?;
+    let mut c = member(&room, "路人", transport::generate_secret()).await?;
+    let (bi, old) = (b.c.session_idx(), room.ticket.secret);
+    assert!(a.c.is_owner() && !b.c.is_owner());
+    assert_eq!(c.c.owner(), Some(owner), "所有人都知道誰是房主");
+
+    // 一般成員不能踢人
+    c.c.kick(bi);
+    wait_forbidden(&mut c.ev).await;
+    assert!(room.host.members().iter().any(|m| m.session_idx == bi));
+
+    // 房主移出 B：B 收到 Kicked，其他人拿到新的邀請
+    a.c.kick(bi);
+    assert_eq!(wait_for(&mut b.ev, |e| *e == ClientEvent::Kicked).await, ClientEvent::Kicked);
+    wait_for(&mut c.ev, |e| *e == ClientEvent::InviteChanged).await;
+    assert!(c.c.ticket().secret != old && c.c.ticket().secret == room.host.secret());
+    assert!(b.c.ticket().secret == old, "被移出的人拿不到新密鑰");
+    assert!(b.c.recv_voice().await.is_err(), "被移出後不再收語音");
+    timeout(T, async {
+        while room.host.members().iter().any(|m| m.session_idx == bi) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+
+    // 舊票回不來，新票可以
+    assert!(join_err(&room, b_key).await.contains("AuthFailed"));
+    room.ticket = c.c.ticket();
+    let d = member(&room, "新朋友", transport::generate_secret()).await?;
+    assert_eq!(d.c.owner(), Some(owner));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_rotates_invite() -> Result<()> {
+    let owner_key = transport::generate_secret();
+    let mut room = start_room_owned(Some(transport::node_id(&owner_key.public()))).await?;
+    let a = member(&room, "房主", owner_key).await?;
+    let mut b = member(&room, "成員", transport::generate_secret()).await?;
+    b.c.rotate_invite();
+    wait_forbidden(&mut b.ev).await;
+
+    a.c.rotate_invite();
+    wait_for(&mut b.ev, |e| *e == ClientEvent::InviteChanged).await;
+    assert!(join_err(&room, transport::generate_secret()).await.contains("AuthFailed"), "舊票失效");
+    room.ticket = b.c.ticket();
+    member(&room, "新朋友", transport::generate_secret()).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_transfers_only_to_members_who_can_relay() -> Result<()> {
+    let owner_key = transport::generate_secret();
+    let owner = transport::node_id(&owner_key.public());
+    let room = start_room_owned(Some(owner)).await?;
+    let mut a = member(&room, "房主", owner_key).await?;
+    let mut b = member(&room, "副手", transport::generate_secret()).await?;
+    let bi = b.c.session_idx();
+    let ch = DEFAULT_CHANNEL;
+
+    // B 沒有備用端點（像網頁版）：不能交給他
+    assert!(!a.c.can_relay(bi));
+    a.c.transfer_owner(bi);
+    wait_forbidden(&mut a.ev).await;
+
+    // B 宣告備用端點後就可以
+    let sb = transport::bind(transport::generate_secret(), RelaySetup::Disabled, true).await?;
+    b.c.announce_standby(transport::host_addr(&sb));
+    timeout(T, async {
+        while !a.c.can_relay(bi) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+    a.c.transfer_owner(bi);
+    let b_node = b.c.node_id();
+    assert_eq!(
+        wait_for(&mut b.ev, |e| matches!(e, ClientEvent::OwnerChanged(_))).await,
+        ClientEvent::OwnerChanged(b_node)
+    );
+    assert!(b.c.is_owner());
+    wait_for(&mut a.ev, |e| matches!(e, ClientEvent::OwnerChanged(_))).await;
+    assert!(!a.c.is_owner());
+    assert_eq!(room.host.owner(), Some(b_node));
+
+    // 權限跟著換：A 不能再改名，B 可以
+    a.c.rename_channel(ch, "亂改");
+    wait_forbidden(&mut a.ev).await;
+    b.c.rename_channel(ch, "總部");
+    assert_eq!(
+        wait_for(&mut a.ev, |e| matches!(e, ClientEvent::ChannelRenamed(..))).await,
+        ClientEvent::ChannelRenamed(ch, "總部".into())
+    );
     Ok(())
 }

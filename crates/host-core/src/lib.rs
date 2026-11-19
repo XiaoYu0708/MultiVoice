@@ -8,8 +8,14 @@
 //!
 //! 同一個 NodeId 重新連線時沿用原本的 `session_idx`（為 M3 房主轉移鋪路）。
 //!
-//! 權限：設定了 [`HostConfig::owner`] 時，只有房主本人（以 NodeId 判斷）能改名／刪除頻道；
-//! 建立頻道所有人都可以。
+//! 權限（管理者，UI 上叫「房主」）：設定了 [`HostConfig::owner`] 時，只有管理者（以成員的 NodeId 判斷）能
+//! 改名／刪除頻道、移出成員、更換邀請、把管理權交給別人；建立頻道所有人都可以。
+//! 管理者是**開房的人**，不是目前負責轉發的這台：管理者放在房間狀態裡（`Welcome.owner`），
+//! 換轉發者時由新的轉發者從自己客戶端看到的狀態帶入（`HostConfig::owner`），所以權限不會跟著轉發走。
+//! 管理權只能交給能當轉發者的人（有宣告備用端點的成員，網頁版不行）。
+//!
+//! 移出成員一定同時更換邀請（新的房間密鑰只發給其他人），被移出的人拿舊票回不來；
+//! 被移出的是轉發者自己時，先叫其他人改連第一候補（`MigrateTo`），再通知他。
 //!
 //! 房主轉移（M3，PLAN.md §5）：
 //! - 成員用 `Standby` 告知自己的備用房主端點；房主依**跟我的連線品質**排出候補名單（[`rank`]：直連優先於 relay、
@@ -62,8 +68,11 @@ pub struct HostConfig {
     pub secret: RoomSecret,
     pub term: u64,
     pub max_members: usize,
-    /// 房主自己的成員身分（NodeId）。Some 時只有他能改名／刪除頻道；None = 不限制（測試用）
+    /// 管理者的成員身分（NodeId）。Some 時只有他能管理房間；None = 不限制（測試用）。
+    /// 新房間是開房的人；接手轉發時沿用客戶端看到的管理者
     pub owner: Option<NodeId>,
+    /// 跑這個房主的客戶端自己的成員身分：不列入候補名單；他被移出時要先換轉發者
+    pub local: Option<NodeId>,
     /// 接手時的初始狀態（M3）；None = 新房間
     pub seed: Option<Seed>,
 }
@@ -102,10 +111,15 @@ struct State {
     next_channel: ChannelId,
     /// 最近一次廣播的候補名單
     successors: Vec<Successor>,
+    /// 管理者（見模組說明）
+    owner: Option<NodeId>,
+    /// 目前的房間密鑰（更換邀請時會變）
+    secret: RoomSecret,
 }
 
 impl State {
-    fn new(seed: Option<&Seed>) -> Self {
+    fn new(cfg: &HostConfig) -> Self {
+        let seed = cfg.seed.as_ref();
         let mut st = Self {
             members: HashMap::new(),
             idx_of: HashMap::new(),
@@ -113,6 +127,8 @@ impl State {
             channels: BTreeMap::from([(DEFAULT_CHANNEL, DEFAULT_CHANNEL_NAME.to_string())]),
             next_channel: DEFAULT_CHANNEL + 1,
             successors: Vec::new(),
+            owner: cfg.owner,
+            secret: cfg.secret,
         };
         if let Some(seed) = seed {
             for c in &seed.channels {
@@ -128,12 +144,12 @@ impl State {
         st
     }
 
-    /// 重算候補名單（有備用端點、不是房主本人；依 [`rank`] 排序），有變動就廣播
-    fn update_successors(&mut self, owner: Option<NodeId>) {
+    /// 重算候補名單（有備用端點、不是轉發者自己；依 [`rank`] 排序），有變動就廣播
+    fn update_successors(&mut self, local: Option<NodeId>) {
         let mut v: Vec<((bool, u8, SessionIdx), Successor)> = self
             .members
             .values()
-            .filter(|m| Some(m.info.node_id) != owner)
+            .filter(|m| Some(m.info.node_id) != local)
             .filter_map(|m| {
                 let host = m.standby.clone()?;
                 let path = m.conn.paths().iter().find(|p| p.is_selected()).map(|p| (p.is_relay(), p.rtt()));
@@ -151,6 +167,13 @@ impl State {
 
     fn broadcast(&self, msg: HostMsg) {
         for m in self.members.values() {
+            let _ = m.ctrl.send(msg.clone());
+        }
+    }
+
+    /// 送給 `skip` 以外的所有人
+    fn broadcast_except(&self, skip: SessionIdx, msg: HostMsg) {
+        for m in self.members.values().filter(|m| m.info.session_idx != skip) {
             let _ = m.ctrl.send(msg.clone());
         }
     }
@@ -198,7 +221,7 @@ pub struct Host {
 
 impl Host {
     pub fn new(cfg: HostConfig) -> Self {
-        let state = State::new(cfg.seed.as_ref());
+        let state = State::new(&cfg);
         Self {
             cfg: Arc::new(cfg),
             state: Arc::new(RwLock::new(state)),
@@ -229,6 +252,16 @@ impl Host {
 
     pub fn term(&self) -> u64 {
         self.cfg.term
+    }
+
+    /// 目前的管理者
+    pub fn owner(&self) -> Option<NodeId> {
+        self.state.read().unwrap().owner
+    }
+
+    /// 目前的房間密鑰
+    pub fn secret(&self) -> RoomSecret {
+        self.state.read().unwrap().secret
     }
 
     /// 目前的候補名單
@@ -277,7 +310,7 @@ impl Host {
                 let mut tick = tokio::time::interval(RERANK_INTERVAL);
                 loop {
                     tick.tick().await;
-                    host.state.write().unwrap().update_successors(host.cfg.owner);
+                    host.state.write().unwrap().update_successors(host.cfg.local);
                 }
             })
         };
@@ -363,7 +396,7 @@ impl Host {
             );
             // 新加入的人也要拿到目前的候補名單
             let _ = ctrl_tx.send(HostMsg::Successors(st.successors.clone()));
-            st.update_successors(self.cfg.owner);
+            st.update_successors(self.cfg.local);
         }
 
         let result = self.serve(&conn, idx, &mut recv, &ctrl_tx).await;
@@ -374,7 +407,7 @@ impl Host {
             if st.members.get(&idx).is_some_and(|m| m.conn.stable_id() == conn.stable_id()) {
                 st.members.remove(&idx);
                 st.broadcast(HostMsg::MemberLeft { session_idx: idx });
-                st.update_successors(self.cfg.owner);
+                st.update_successors(self.cfg.local);
                 info!("成員離開：#{idx} {}", info.display_name);
             }
         }
@@ -413,7 +446,8 @@ impl Host {
         let client = transport::node_id(&conn.remote_id());
         let display_name = match transport::read_msg::<ClientMsg>(recv).await? {
             ClientMsg::Auth { proof, display_name } => {
-                if !verify_join_proof(&self.cfg.secret, &self.cfg.room_id, &nonce, &client, &proof) {
+                let secret = self.state.read().unwrap().secret;
+                if !verify_join_proof(&secret, &self.cfg.room_id, &nonce, &client, &proof) {
                     transport::write_msg(send, &reject(ErrorCode::AuthFailed, "邀請票無效或已失效")).await?;
                     bail!("加入證明錯誤");
                 }
@@ -442,10 +476,11 @@ impl Host {
                     st.members.values().filter(|m| m.info.session_idx != idx).map(|m| m.info.clone()).collect();
                 let subscriptions: Vec<_> =
                     st.subscription_list().into_iter().filter(|s| s.session_idx != idx).collect();
-                Some((idx, members, st.channel_list(), subscriptions))
+                let relay = self.cfg.local.and_then(|n| st.idx_of.get(&n).copied());
+                Some((idx, members, st.channel_list(), subscriptions, st.owner, relay))
             }
         };
-        let Some((idx, members, channels, subscriptions)) = assigned else {
+        let Some((idx, members, channels, subscriptions, owner, relay)) = assigned else {
             transport::write_msg(send, &reject(ErrorCode::RoomFull, "房間已滿")).await?;
             bail!("房間已滿");
         };
@@ -453,7 +488,7 @@ impl Host {
         let info = MemberInfo { session_idx: idx, node_id: client, display_name };
         transport::write_msg(
             send,
-            &HostMsg::Welcome { session_idx: idx, term: self.cfg.term, members, channels, subscriptions },
+            &HostMsg::Welcome { session_idx: idx, term: self.cfg.term, members, channels, subscriptions, owner, relay },
         )
         .await?;
         Ok(info)
@@ -487,9 +522,9 @@ impl Host {
         }
     }
 
-    /// 房主才能做的操作
+    /// 管理者才能做的操作
     fn require_owner(&self, st: &State, idx: SessionIdx, why: &'static str) -> Result<(), (ErrorCode, &'static str)> {
-        match self.cfg.owner {
+        match st.owner {
             None => Ok(()),
             Some(owner) if st.members.get(&idx).is_some_and(|m| m.info.node_id == owner) => Ok(()),
             Some(_) => Err((ErrorCode::Forbidden, why)),
@@ -569,7 +604,62 @@ impl Host {
             ClientMsg::Standby(addr) => {
                 let me = st.members.get_mut(&idx).ok_or((ErrorCode::BadMessage, "成員不存在"))?;
                 me.standby = Some(addr);
-                st.update_successors(self.cfg.owner);
+                st.update_successors(self.cfg.local);
+            }
+            ClientMsg::Kick { session_idx: target } => {
+                self.require_owner(&st, idx, "只有房主可以移出成員")?;
+                if target == idx {
+                    return Err((ErrorCode::Forbidden, "不能移出自己"));
+                }
+                let t = st.members.get(&target).ok_or((ErrorCode::BadMessage, "這位成員已經不在房間裡"))?;
+                let is_relay = self.cfg.local == Some(t.info.node_id);
+                // 被移出的是轉發者自己：要有人接手，否則整個房間都會斷
+                let next = match is_relay {
+                    true => Some(
+                        st.successors.first().cloned().ok_or((ErrorCode::Forbidden, "沒有人能接手轉發，現在不能移出他"))?,
+                    ),
+                    false => None,
+                };
+                info!("移出成員 #{target} {}", t.info.display_name);
+                // 新密鑰只給其他人：被移出的人拿舊票回不來
+                let secret = RoomSecret(transport::random_bytes());
+                st.secret = secret;
+                st.broadcast_except(target, HostMsg::SecretChanged { secret });
+                if let Some(next) = next {
+                    st.broadcast_except(
+                        target,
+                        HostMsg::MigrateTo { session_idx: next.session_idx, host: next.host, term: self.cfg.term + 1 },
+                    );
+                }
+                let t = &st.members[&target];
+                let _ = t.ctrl.send(HostMsg::Kicked);
+                if !is_relay {
+                    // 讓通知送出去再斷線（轉發者自己則由 session 在大家改連後停掉房主）
+                    let conn = t.conn.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        conn.close(5u32.into(), b"kicked");
+                    });
+                }
+            }
+            ClientMsg::RotateSecret => {
+                self.require_owner(&st, idx, "只有房主可以更換邀請")?;
+                let secret = RoomSecret(transport::random_bytes());
+                st.secret = secret;
+                st.broadcast(HostMsg::SecretChanged { secret });
+                info!("已更換邀請");
+            }
+            ClientMsg::TransferOwner { session_idx: target } => {
+                self.require_owner(&st, idx, "只有房主可以交出房主")?;
+                let t = st.members.get(&target).ok_or((ErrorCode::BadMessage, "這位成員已經不在房間裡"))?;
+                // 只能交給能當轉發者的人（網頁版沒有備用端點）
+                if t.standby.is_none() && self.cfg.local != Some(t.info.node_id) {
+                    return Err((ErrorCode::Forbidden, "只能交給用桌面版、可以當房主的成員"));
+                }
+                let owner = t.info.node_id;
+                info!("管理權交給 #{target} {}", t.info.display_name);
+                st.owner = Some(owner);
+                st.broadcast(HostMsg::OwnerChanged { owner });
             }
             other => {
                 warn!("#{idx} 送了不該在這時送的訊息：{other:?}");

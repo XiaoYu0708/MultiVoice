@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{Nonce, Proof};
-use crate::ticket::RoomId;
+use crate::ticket::{RoomId, RoomSecret};
 use crate::{ChannelId, NodeId, SessionIdx};
 
 /// 單則控制訊息上限，防止惡意長度造成大量配置
@@ -85,6 +85,12 @@ pub enum ClientMsg {
     Standby(HostAddr),
     /// 不加入，只問「你是不是這個房間的房主、有幾個人」（雙房主合併用；取代 Hello 當第一則訊息）
     HostProbe { room_id: RoomId },
+    /// 管理者：把這位成員移出房間（同時更換邀請，舊的邀請票失效）（v5）
+    Kick { session_idx: SessionIdx },
+    /// 管理者：更換邀請（新的房間密鑰，舊的邀請票失效）（v5）
+    RotateSecret,
+    /// 管理者：把管理權交給這位成員（他要能當轉發者，也就是有宣告備用端點）（v5）
+    TransferOwner { session_idx: SessionIdx },
 }
 
 /// 房主 → 成員
@@ -99,6 +105,10 @@ pub enum HostMsg {
         members: Vec<MemberInfo>,
         channels: Vec<ChannelInfo>,
         subscriptions: Vec<Subscription>,
+        /// 管理者（開房的人，或被他轉移的人）的成員身分；None = 不限制（v5）
+        owner: Option<NodeId>,
+        /// 目前轉發者（房主）自己的成員編號；還沒連上時 None（v5）
+        relay: Option<SessionIdx>,
     },
     MemberJoined(MemberInfo),
     MemberLeft { session_idx: SessionIdx },
@@ -119,6 +129,12 @@ pub enum HostMsg {
     HostInfo { term: u64, members: u32 },
     /// 雙房主合併：這個房主要讓位，所有人改連 `host`（沒有人要接手）
     MoveTo { host: HostAddr },
+    /// 邀請更換了：之後加入（含換房主後重連）都要用新的密鑰（v5）
+    SecretChanged { secret: RoomSecret },
+    /// 你被管理者移出房間：不要重連，也不要接手當房主（v5）
+    Kicked,
+    /// 管理權換人（v5）
+    OwnerChanged { owner: NodeId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +209,12 @@ mod tests {
             members: vec![MemberInfo { session_idx: 1, node_id: [9; 32], display_name: "會長".into() }],
             channels: vec![ChannelInfo { id: 0, name: "大廳".into() }, ChannelInfo { id: 5, name: "指揮部".into() }],
             subscriptions: vec![Subscription { session_idx: 1, channel: 5, listen: true, talk: false }],
+            owner: Some([9; 32]),
+            relay: Some(1),
         });
+        roundtrip(ClientMsg::Kick { session_idx: 4 });
+        roundtrip(HostMsg::SecretChanged { secret: RoomSecret([5; 32]) });
+        roundtrip(HostMsg::OwnerChanged { owner: [6; 32] });
         roundtrip(ClientMsg::Subscribe { channel: 5, slot: 63, listen: true, talk: true });
         roundtrip(HostMsg::SubscriptionChanged(Subscription { session_idx: 2, channel: 0, listen: false, talk: false }));
         roundtrip(HostMsg::Error { code: ErrorCode::AuthFailed, message: "x".into() });

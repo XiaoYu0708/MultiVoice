@@ -158,6 +158,19 @@ impl Takeover {
         self.stop_redirector.notify_one();
     }
 
+    /// 我被房主移出房間：不再找房主、不再接手；我正在轉發的話，等其他人改連第一候補（房主已經通知了）再停掉
+    pub fn on_kicked(self: &Arc<Self>) {
+        self.shutdown();
+        if let Some(host) = self.host() {
+            let me = self.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(2000)).await;
+                host.stop();
+                *me.host.lock().unwrap() = None;
+            });
+        }
+    }
+
     fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
     }
@@ -254,7 +267,9 @@ impl Takeover {
             secret: t.secret,
             term,
             max_members: 100,
-            owner: Some(me),
+            // 房主（管理權）跟著開房的人，不跟著轉發走
+            owner: self.client.owner(),
+            local: Some(me),
             seed: Some(Seed { channels: self.client.channels(), members }),
         });
         // notify_one 會保留一次通知：轉址 task 就算剛好不在等，下一輪也會馬上收到而退出

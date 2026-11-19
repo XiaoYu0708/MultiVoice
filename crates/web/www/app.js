@@ -370,6 +370,7 @@ async function eventLoop(r) {
     if (e === undefined) { exitRoom('連線已結束'); return; }
     const ev = JSON.parse(e);
     if (ev.type === 'disconnected') { exitRoom(ev.text); return; }
+    if (ev.type === 'invite') { history.replaceState(null, '', '#' + r.ticket()); log(ev.text); }
     if (ev.type === 'log' || ev.type === 'error') log(ev.text);
     if (ev.type !== 'rtt') refresh();
   }

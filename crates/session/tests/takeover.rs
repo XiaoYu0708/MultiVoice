@@ -50,6 +50,7 @@ async fn start_room() -> Result<(Room, M)> {
         term: 1,
         max_members: 100,
         owner: Some(transport::node_id(&owner_key.public())),
+        local: Some(transport::node_id(&owner_key.public())),
         seed: None,
     });
     tokio::spawn({
@@ -121,6 +122,10 @@ async fn connect_with(
                     tokio::spawn(t2.clone().on_host_lost());
                 }
                 ClientEvent::Rtt(_) => {}
+                ClientEvent::Kicked => {
+                    t2.on_kicked();
+                    let _ = tx.send(ClientEvent::Kicked);
+                }
                 e => {
                     let _ = tx.send(e);
                 }
@@ -567,5 +572,59 @@ async fn chaos_sequence_keeps_single_host() -> Result<()> {
     let t4 = converged("4 轉移途中接手的人當機", &ms, &alive).await;
     assert!(t4 > t3);
     println!("混沌測試完成：{:?}", started.elapsed());
+    Ok(())
+}
+
+/// 房主（管理權）跟著開房的人：A 讓出轉發給 B 之後，B 那邊的房主還是 A
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_stays_with_creator_after_hand_over() -> Result<()> {
+    let (_room, a, b, c) = three_member_room().await?;
+    let a_node = a.c.node_id();
+    assert!(a.c.is_owner() && !b.c.is_owner());
+    assert!(a.t.hand_over());
+    wait_until("B 成為轉發者", || b.t.host().is_some()).await;
+    let b_host = b.t.host().unwrap();
+    wait_until("B 那邊三個人", || b_host.member_count() == 3).await;
+    assert_eq!(b_host.owner(), Some(a_node), "新的轉發者沿用原本的房主");
+    wait_until("大家都看到房主還是 A", || [&a, &b, &c].iter().all(|m| m.c.term() == 2 && m.c.owner() == Some(a_node)))
+        .await;
+    assert!(a.c.is_owner() && !b.c.is_owner());
+    Ok(())
+}
+
+/// 房主移出目前的轉發者 B：其他人先改連下一位候補 C，B 收到 Kicked 後停掉自己的房主
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_kicks_the_relay() -> Result<()> {
+    let (room, a, mut b, c) = three_member_room().await?;
+    let old_secret = room.ticket.secret;
+    let a_node = a.c.node_id();
+    assert!(a.t.hand_over());
+    wait_until("B 成為轉發者", || b.t.host().is_some()).await;
+    let b_host = b.t.host().unwrap();
+    wait_until("B 那邊三個人、候補只剩 C", || {
+        let s = a.c.successors();
+        b_host.member_count() == 3 && s.len() == 1 && s[0].session_idx == c.c.session_idx()
+    })
+    .await;
+
+    a.c.kick(b.c.session_idx());
+    let r = timeout(T, async {
+        loop {
+            if let Some(ClientEvent::Kicked) = b.ev.recv().await {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(r.is_ok(), "B 要收到 Kicked");
+    wait_until("C 接手轉發", || c.t.host().is_some()).await;
+    let c_host = c.t.host().unwrap();
+    let c_id = transport::node_id(&c.standby.as_ref().unwrap().id());
+    wait_until("A 改連到 C、C 那邊兩個人", || a.c.host_id() == c_id && c_host.member_count() == 2).await;
+    wait_until("B 的轉發停掉", || b.t.host().is_none()).await;
+    assert_eq!(c_host.owner(), Some(a_node), "房主還是 A");
+    assert!(c_host.secret() != old_secret && c_host.secret() == a.c.ticket().secret, "C 用新的密鑰");
+    assert!(b.c.ticket().secret != c_host.secret(), "B 拿不到新密鑰");
+    assert!(b.c.recv_voice().await.is_err());
     Ok(())
 }

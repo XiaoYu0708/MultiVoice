@@ -14,6 +14,12 @@
 //! （重複的封包由 jitter buffer 依序號去掉；換房主後成員編號與槽位不變，兩邊的封包對得上）。
 //! 大家改連的時間不一樣（網路慢的人晚一點），先換過去的人和還沒換的人仍然能透過舊房主互相聽到。
 //!
+//! ## 管理（v5）
+//! 房間的管理者（UI 上叫「房主」）是開房的人，不一定是目前的轉發者：[`Client::owner`]、[`Client::is_owner`]。
+//! 管理者可以 [`Client::kick`]、[`Client::rotate_invite`]、[`Client::transfer_owner`]；
+//! 邀請更換時 [`Client::ticket`] 會換成新的密鑰（[`ClientEvent::InviteChanged`]），
+//! 被移出時發出 [`ClientEvent::Kicked`]，之後不會再重連。
+//!
 //! 計時與背景工作用 `n0_future`（原生走 tokio、瀏覽器走 wasm-bindgen-futures），網頁版（`crates/web`）也共用這個 crate。
 
 use std::collections::{BTreeMap, HashMap};
@@ -69,6 +75,12 @@ pub enum ClientEvent {
     Reconnected { term: u64 },
     /// 連線結束，不會再恢復
     Disconnected(String),
+    /// 管理權換人（v5）
+    OwnerChanged(NodeId),
+    /// 邀請更換了，[`Client::ticket`] 已經是新的（v5）
+    InviteChanged,
+    /// 我被管理者移出房間；連線已結束，不會再重連（v5）
+    Kicked,
 }
 
 /// 房間狀態（由控制訊息維護）
@@ -80,15 +92,27 @@ struct Room {
     subs: BTreeMap<(ChannelId, SessionIdx), (bool, bool)>,
     /// 我在各頻道使用的槽位
     my_slots: HashMap<ChannelId, u8>,
+    /// 管理者；None = 不限制
+    owner: Option<NodeId>,
+    /// 目前轉發者自己的成員編號
+    relay: Option<SessionIdx>,
 }
 
 impl Room {
-    fn from_welcome(members: Vec<MemberInfo>, channels: Vec<ChannelInfo>, subscriptions: Vec<Subscription>) -> Self {
+    fn from_welcome(
+        members: Vec<MemberInfo>,
+        channels: Vec<ChannelInfo>,
+        subscriptions: Vec<Subscription>,
+        owner: Option<NodeId>,
+        relay: Option<SessionIdx>,
+    ) -> Self {
         Room {
             members: members.into_iter().map(|m| (m.session_idx, m)).collect(),
             channels: channels.into_iter().map(|c| (c.id, c.name)).collect(),
             subs: subscriptions.into_iter().map(|s| ((s.channel, s.session_idx), (s.listen, s.talk))).collect(),
             my_slots: HashMap::new(),
+            owner,
+            relay,
         }
     }
 
@@ -126,6 +150,10 @@ impl Room {
                 ClientEvent::SubscriptionChanged(s)
             }
             HostMsg::Error { code, message } => ClientEvent::HostError(code, message),
+            HostMsg::OwnerChanged { owner } => {
+                self.owner = Some(owner);
+                ClientEvent::OwnerChanged(owner)
+            }
             _ => return None,
         })
     }
@@ -144,7 +172,8 @@ struct Link {
 
 struct Inner {
     ep: Endpoint,
-    ticket: Ticket,
+    /// 更換邀請時換成新的密鑰
+    ticket: Mutex<Ticket>,
     name: String,
     link: Mutex<Link>,
     /// 換房主後還在保留的舊連線（先建後拆，[`DRAIN`] 後關掉）
@@ -222,7 +251,7 @@ impl Client {
         let (ctrl, ctrl_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             ep: ep.clone(),
-            ticket: ticket.clone(),
+            ticket: Mutex::new(ticket.clone()),
             name: name.to_string(),
             link: Mutex::new(Link { conn: conn.clone(), ctrl: ctrl.clone(), session_idx, term, host: addr, generation: 0 }),
             draining: Mutex::new(None),
@@ -250,7 +279,8 @@ impl Client {
         let mut addr = addr;
         let mut hops = 0;
         let hs = loop {
-            match timed_handshake(&inner.ep, addr.clone(), &inner.ticket, &inner.name).await? {
+            let ticket = inner.ticket.lock().unwrap().clone();
+            match timed_handshake(&inner.ep, addr.clone(), &ticket, &inner.name).await? {
                 Handshake::Redirect(host) if hops < 3 => {
                     hops += 1;
                     addr = EndpointAddr::from(transport::endpoint_id(&host)?);
@@ -352,8 +382,44 @@ impl Client {
         self.inner.link.lock().unwrap().host.clone()
     }
 
-    pub fn ticket(&self) -> &Ticket {
-        &self.inner.ticket
+    /// 邀請票（密鑰是最新的；bootstrap 是加入時用的那張）
+    pub fn ticket(&self) -> Ticket {
+        self.inner.ticket.lock().unwrap().clone()
+    }
+
+    /// 管理者（UI 上的「房主」）；None = 不限制
+    pub fn owner(&self) -> Option<NodeId> {
+        self.inner.room.lock().unwrap().owner
+    }
+
+    /// 我能不能管理房間（改名／刪除頻道、移出成員、更換邀請、交出房主）
+    pub fn is_owner(&self) -> bool {
+        self.owner().is_none_or(|o| o == self.node_id())
+    }
+
+    /// 目前轉發者自己的成員編號
+    pub fn relay(&self) -> Option<SessionIdx> {
+        self.inner.room.lock().unwrap().relay
+    }
+
+    /// 某位成員能不能當轉發者（有備用端點，或就是目前的轉發者）：只有這些人能接下房主
+    pub fn can_relay(&self, idx: SessionIdx) -> bool {
+        self.relay() == Some(idx) || self.inner.successors.lock().unwrap().iter().any(|s| s.session_idx == idx)
+    }
+
+    /// 管理者：把這位成員移出房間（同時更換邀請）
+    pub fn kick(&self, idx: SessionIdx) {
+        self.send_ctrl(ClientMsg::Kick { session_idx: idx });
+    }
+
+    /// 管理者：更換邀請，舊的邀請票失效
+    pub fn rotate_invite(&self) {
+        self.send_ctrl(ClientMsg::RotateSecret);
+    }
+
+    /// 管理者：把房主（管理權）交給這位成員
+    pub fn transfer_owner(&self, idx: SessionIdx) {
+        self.send_ctrl(ClientMsg::TransferOwner { session_idx: idx });
     }
 
     /// 房主候補名單（依接手順序）
@@ -579,13 +645,13 @@ async fn handshake(ep: &Endpoint, addr: EndpointAddr, ticket: &Ticket, name: &st
     transport::write_msg(&mut send, &ClientMsg::Auth { proof, display_name: name.to_string() }).await?;
 
     match transport::read_msg::<HostMsg>(&mut recv).await? {
-        HostMsg::Welcome { session_idx, term, members, channels, subscriptions } => Ok(Handshake::Joined {
+        HostMsg::Welcome { session_idx, term, members, channels, subscriptions, owner, relay } => Ok(Handshake::Joined {
             conn,
             send,
             recv,
             session_idx,
             term,
-            room: Room::from_welcome(members, channels, subscriptions),
+            room: Room::from_welcome(members, channels, subscriptions, owner, relay),
         }),
         HostMsg::Error { code, message } => bail!("房主拒絕（{code:?}）：{message}"),
         other => bail!("預期 Welcome，收到 {other:?}"),
@@ -650,6 +716,21 @@ fn spawn_link_tasks(
                     Ok(HostMsg::MoveTo { host }) => {
                         inner.migrating.store(true, Ordering::SeqCst);
                         let _ = inner.ev_tx.send(ClientEvent::MoveTo { host });
+                    }
+                    Ok(HostMsg::SecretChanged { secret }) => {
+                        inner.ticket.lock().unwrap().secret = secret;
+                        let _ = inner.ev_tx.send(ClientEvent::InviteChanged);
+                    }
+                    Ok(HostMsg::Kicked) => {
+                        // 跟 give_up 一樣結束，但不重連：收送語音的地方會看到 dead 而停下
+                        inner.dead.store(true, Ordering::SeqCst);
+                        inner.generation.send_modify(|g| *g += 1);
+                        let _ = inner.ev_tx.send(ClientEvent::Kicked);
+                        conn.close(0u32.into(), b"kicked");
+                        if let Some(old) = inner.draining.lock().unwrap().take() {
+                            old.close(0u32.into(), b"kicked");
+                        }
+                        break "kicked".to_string();
                     }
                     Ok(msg) => {
                         let ev = inner.room.lock().unwrap().apply(&msg);

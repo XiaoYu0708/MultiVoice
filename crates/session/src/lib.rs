@@ -50,7 +50,7 @@ pub struct Connected {
 /// 建立房間：本機同時跑房主邏輯與自己的客戶端
 pub async fn host_room(profile: &str, name: &str, relays: RelaySetup, can_host: bool) -> Result<Connected> {
     let key = identity::load_or_create(profile)?;
-    // 只有房主自己（這個 profile 的身分）能改名／刪除頻道
+    // 管理者是開房的人（這個 profile 的身分）；之後換轉發者也不會變，除非他自己交出去
     let owner = transport::node_id(&key.public());
     // 房主端點用一次性的金鑰；自己的成員身分用 profile 的永久金鑰
     let host_ep = transport::bind(transport::generate_secret(), relays.clone(), true).await?;
@@ -59,7 +59,15 @@ pub async fn host_room(profile: &str, name: &str, relays: RelaySetup, can_host: 
         secret: RoomSecret(transport::random_bytes()),
         bootstrap: vec![transport::node_id(&host_ep.id())],
     };
-    let host = Host::new(HostConfig { room_id: ticket.room_id, secret: ticket.secret, term: 1, max_members: 100, owner: Some(owner), seed: None });
+    let host = Host::new(HostConfig {
+        room_id: ticket.room_id,
+        secret: ticket.secret,
+        term: 1,
+        max_members: 100,
+        owner: Some(owner),
+        local: Some(owner),
+        seed: None,
+    });
     tokio::spawn({
         let (host, ep) = (host.clone(), host_ep.clone());
         async move { host.run(ep).await }
@@ -113,6 +121,8 @@ pub struct ChannelMemberView {
     pub idx: SessionIdx,
     pub name: String,
     pub is_me: bool,
+    /// 能當轉發者（桌面版）：房主只能交給這些人
+    pub can_own: bool,
     pub listen: bool,
     pub talk: bool,
     /// 正在這個頻道說話
@@ -135,7 +145,12 @@ pub struct Snapshot {
     pub channels: Vec<ChannelView>,
     /// 目前正在送出聲音的頻道名稱
     pub talking_to: Vec<String>,
+    /// 我是目前的轉發者（跑 host-core 的那台；會自動換人）
     pub is_host: bool,
+    /// 我是房主（管理者：開房的人或他交給的人）：能改名／刪除頻道、移出成員、更換邀請
+    pub is_owner: bool,
+    /// 房主的名字（不在房間裡時 None）
+    pub owner_name: Option<String>,
     /// 正在找新房主（房主離開或失聯）
     pub reconnecting: bool,
     pub ticket: String,
@@ -364,6 +379,26 @@ impl Session {
                         r.push_log(format!("連線中斷：{why}"));
                         r.disconnected = Some(why);
                     }
+                    ClientEvent::OwnerChanged(owner) => {
+                        let name = if owner == client2.node_id() {
+                            "你".to_string()
+                        } else {
+                            client2
+                                .members()
+                                .into_iter()
+                                .find(|m| m.node_id == owner)
+                                .map(|m| m.display_name)
+                                .unwrap_or_else(|| "其他人".into())
+                        };
+                        r.push_log(format!("{name}成為房主"));
+                    }
+                    ClientEvent::InviteChanged => r.push_log("邀請連結已更換，舊的連結不能再用".into()),
+                    ClientEvent::Kicked => {
+                        let why = "你被房主移出房間".to_string();
+                        r.push_log(why.clone());
+                        r.disconnected = Some(why);
+                        takeover2.on_kicked();
+                    }
                 }
             }
         });
@@ -423,6 +458,21 @@ impl Session {
         self.client.delete_channel(channel);
     }
 
+    /// 房主：移出成員（同時更換邀請）
+    pub fn kick(&self, idx: SessionIdx) {
+        self.client.kick(idx);
+    }
+
+    /// 房主：更換邀請，舊的連結失效
+    pub fn rotate_invite(&self) {
+        self.client.rotate_invite();
+    }
+
+    /// 房主：把房主交給這位成員（要能當轉發者）
+    pub fn transfer_owner(&self, idx: SessionIdx) {
+        self.client.transfer_owner(idx);
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let speaking = self.shared.speaking(Duration::from_millis(300));
         let talking_to = self.shared.talking_to();
@@ -457,6 +507,7 @@ impl Session {
                             idx: s.session_idx,
                             name: if is_me { self.name.clone() } else { names.get(&s.session_idx).cloned().unwrap_or_default() },
                             is_me,
+                            can_own: !is_me && self.client.can_relay(s.session_idx),
                             listen: s.listen,
                             talk: s.talk,
                             speaking,
@@ -482,6 +533,12 @@ impl Session {
         let host_load = host.map(|h| HostLoad { listeners: h.member_count().saturating_sub(1), up_kbps });
         let (mic_peak, mic_vad) = self.shared.mic_level();
         let tx_active = self.shared.tx_active.load(Ordering::Relaxed);
+        let owner = self.client.owner();
+        let owner_name = match owner {
+            Some(o) if o == self.client.node_id() => Some(self.name.clone()),
+            Some(o) => self.client.members().into_iter().find(|m| m.node_id == o).map(|m| m.display_name),
+            None => None,
+        };
         let r = self.room.lock().unwrap();
         Snapshot {
             me: MemberView { idx: my_idx, name: self.name.clone(), speaking: tx_active },
@@ -489,6 +546,8 @@ impl Session {
             channels,
             talking_to: talking_to.iter().filter_map(|c| channel_names.get(c).cloned()).collect(),
             is_host: self.takeover.host().is_some(),
+            is_owner: self.client.is_owner(),
+            owner_name,
             reconnecting: self.takeover.recovering(),
             ticket: self.ticket().to_string(),
             muted: self.shared.is_muted(),

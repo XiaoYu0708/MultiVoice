@@ -181,7 +181,11 @@ fn print_status(s: &Snapshot) {
     let j = &s.jitter;
     let role = if s.reconnecting {
         "找新房主中｜"
+    } else if s.is_host && s.is_owner {
+        "房主＋轉發｜"
     } else if s.is_host {
+        "轉發｜"
+    } else if s.is_owner {
         "房主｜"
     } else {
         ""
