@@ -120,6 +120,45 @@ impl Drop for MicTest {
     }
 }
 
+/// 試聽提示音（調整提示音音量時用，不用進房）：在背景執行緒開輸出裝置播一次「開始按鍵說話」的提示音。
+/// `gain` = 輸出音量 × 提示音音量。開不起來就算了（只是試聽）
+pub fn preview_cue(output: Option<String>, gain: f32) {
+    let _ = std::thread::Builder::new().name("cue-preview".into()).spawn(move || {
+        let _ = play_cue(output, gain);
+    });
+}
+
+fn play_cue(output: Option<String>, gain: f32) -> Result<()> {
+    use crate::talk::{Cue, TonePlayer};
+    let err = anyhow::Error::from_boxed;
+    let out_dev = device::find_device(false, output.as_deref()).map_err(err)?;
+    let out_rate = device::default_rate(&out_dev, false).map_err(err)?;
+    let mut tones = TonePlayer::default();
+    tones.play(Cue::PttOn(0));
+    // 前面墊 50 ms 靜音，輸出剛開始時不會被吃掉開頭
+    let mut stereo = vec![0f32; SAMPLE_RATE as usize / 20 * 2];
+    let mut buf = vec![0f32; FRAME_SAMPLES * 2];
+    while tones.playing() {
+        buf.fill(0.0);
+        tones.mix_into(&mut buf, gain);
+        stereo.extend_from_slice(&buf);
+    }
+    let mut rs = Resampler::new(SAMPLE_RATE, out_rate, 2).map_err(err)?;
+    let mut out = Vec::new();
+    rs.process(&stereo, &mut out);
+    // 尾巴也墊一點，讓重取樣器吐完
+    rs.process(&vec![0f32; FRAME_SAMPLES * 2], &mut out);
+    let (mut prod, cons) = rtrb::RingBuffer::<f32>::new(out.len() + 16);
+    for &v in &out {
+        let _ = prod.push(v);
+    }
+    let (_stream, _) =
+        device::open_output(&out_dev, cons, Arc::new(StreamStats::default()), None, 1.0, None).map_err(err)?;
+    let secs = out.len() as f32 / 2.0 / out_rate as f32;
+    std::thread::sleep(Duration::from_secs_f32(secs + 0.15));
+    Ok(())
+}
+
 fn run(
     input: Option<String>,
     output: Option<String>,

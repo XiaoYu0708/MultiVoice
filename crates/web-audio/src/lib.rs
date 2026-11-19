@@ -144,6 +144,18 @@ pub extern "C" fn mv_set_flags(p: *mut Handle, muted: u32, deafened: u32, cues: 
     e.cues = cues != 0;
 }
 
+/// 提示音音量倍率（1.0 = 原本）
+#[unsafe(no_mangle)]
+pub extern "C" fn mv_set_cue_volume(p: *mut Handle, v: f32) {
+    h(p).engine.cue_volume = v.clamp(0.0, mixer_core::talk::MAX_CUE_VOLUME);
+}
+
+/// 試聽提示音
+#[unsafe(no_mangle)]
+pub extern "C" fn mv_preview_cue(p: *mut Handle) {
+    h(p).engine.preview_cue();
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mv_set_volume(p: *mut Handle, v: f32) {
     h(p).engine.volume = v.clamp(0.0, 4.0);

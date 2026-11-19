@@ -641,6 +641,11 @@ impl Session {
         self.shared.clone()
     }
 
+    /// 試聽提示音（調整提示音音量時用）
+    pub fn preview_cue(&self) {
+        self.shared.preview_cue();
+    }
+
     /// 見 [`Shared::set_muted`]：拒聽中取消靜音會一起取消拒聽
     pub fn set_muted(&self, v: bool) {
         self.shared.set_muted(v);

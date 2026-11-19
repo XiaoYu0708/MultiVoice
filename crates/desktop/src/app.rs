@@ -535,6 +535,23 @@ impl App {
         ui.label(RichText::new("按鍵說話").strong());
         ui.weak("進房後在頻道的「說話」選「按鍵說話」設定按鍵；遊戲在前景時也有效");
         style::toggle(ui, &mut self.settings.cues, "開／關麥提示音");
+        if self.settings.cues {
+            ui.horizontal(|ui| {
+                let r = ui
+                    .add(
+                        egui::Slider::new(&mut self.settings.cue_volume, 0.0..=session::talk::MAX_CUE_VOLUME)
+                            .step_by(0.05)
+                            .text("提示音音量")
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    )
+                    .on_hover_text("放開滑桿會試聽一次；提示音也跟著輸出音量");
+                // 拖完放開或用鍵盤調整時試聽
+                let released = r.drag_stopped() || (r.changed() && !r.dragged());
+                if released || ui.small_button("試聽").clicked() {
+                    self.preview_cue();
+                }
+            });
+        }
         if self.tray.is_some() {
             style::toggle(ui, &mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
         }
@@ -801,6 +818,17 @@ impl App {
         });
         if r.peak > 0.98 {
             ui.colored_label(AMBER, "音量爆掉了：麥克風太近或系統的麥克風音量太大");
+        }
+    }
+
+    /// 試聽提示音：在房間裡就由正在跑的音訊管線播（和實際聽到的一樣），否則暫時開輸出裝置播
+    fn preview_cue(&self) {
+        match &self.session {
+            Some(s) => s.preview_cue(),
+            None => session::mictest::preview_cue(
+                self.settings.output_device.clone(),
+                self.settings.output_volume * self.settings.cue_volume,
+            ),
         }
     }
 

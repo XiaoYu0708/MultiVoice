@@ -24,6 +24,7 @@ const settings = {
   denoise: store.get('denoise', true),
   strong: store.get('strong', false),
   cues: store.get('cues', true),
+  cueVolume: store.get('cueVolume', 1),
   wakelock: store.get('wakelock', true),
 };
 /** channel id -> { mode, listen, volume } for channels I joined */
@@ -252,6 +253,7 @@ function post(m, transfer) { node?.port.postMessage(m, transfer); }
 
 function pushSettings() {
   post({ t: 'volume', v: settings.volume });
+  post({ t: 'cueVolume', v: settings.cueVolume });
   post({ t: 'gate', db: settings.gate });
   post({ t: 'denoise', on: settings.denoise });
   post({ t: 'strong', on: settings.denoise && settings.strong });
@@ -783,7 +785,13 @@ bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudi
 bindSetting('denoise', 'denoise', null, applyDenoise);
 bindSetting('strong', 'strong', null, applyStrong);
 renderStrong();
-bindSetting('cues', 'cues', null, pushSettings);
+bindSetting('cues', 'cues', null, () => { pushSettings(); renderCueVolume(); });
+bindSetting('cue-volume', 'cueVolume', (v) => Math.round(v * 100) + '%', pushSettings);
+// release the slider (or the preview button) -> play the cue once at the new volume
+$('#cue-volume').addEventListener('change', () => post({ t: 'previewCue' }));
+$('#cue-preview').addEventListener('click', () => post({ t: 'previewCue' }));
+function renderCueVolume() { $('#cue-volume-field').hidden = !settings.cues; }
+renderCueVolume();
 bindSetting('wakelock', 'wakelock', null, (on) => setWakeLock(on && !!room));
 renderToggles();
 

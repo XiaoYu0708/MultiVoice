@@ -4,7 +4,7 @@
 //
 // main -> worklet messages: {t:'wasm', bytes} {t:'pkt', b} {t:'slot', slot, active, volume, pan, priority}
 //   {t:'talk', open:[lo,hi], vad:[lo,hi]} {t:'ptt', m:[lo,hi]} {t:'flags', muted, deafened, cues}
-//   {t:'volume', v} {t:'gate', db} {t:'denoise', on} {t:'strong', on} {t:'dfn', bytes}
+//   {t:'volume', v} {t:'cueVolume', v} {t:'previewCue'} {t:'gate', db} {t:'denoise', on} {t:'strong', on} {t:'dfn', bytes}
 // worklet -> main: {t:'ready'} {t:'error', msg} {t:'out', b:ArrayBuffer} {t:'status', s:Int32Array} {t:'dfn', ok, msg}
 //
 // Strong noise suppression (DeepFilterNet3) is a separate module, web_dfn.wasm (built with SIMD, ~5.5 MB,
@@ -61,6 +61,8 @@ class MvEngine extends AudioWorkletProcessor {
       case 'ptt': x.mv_set_ptt(h, m.m[0], m.m[1]); break;
       case 'flags': x.mv_set_flags(h, m.muted ? 1 : 0, m.deafened ? 1 : 0, m.cues ? 1 : 0); break;
       case 'volume': x.mv_set_volume(h, m.v); break;
+      case 'cueVolume': x.mv_set_cue_volume(h, m.v); break;
+      case 'previewCue': x.mv_preview_cue(h); break;
       case 'gate': x.mv_set_gate(h, m.db); break;
       case 'denoise': x.mv_set_denoise(h, m.on ? 1 : 0); break;
       case 'strong':

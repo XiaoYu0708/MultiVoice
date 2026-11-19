@@ -131,6 +131,11 @@
     <label class="check sub"><input id="strong" type="checkbox"> <span>強力降噪（DeepFilterNet，和桌面版相同）<small class="muted" id="strong-state"></small></span></label>
     <p class="muted small sub">背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。第一次開會下載約 5 MB；較舊的手機可能會斷音。</p>
     <label class="check"><input id="cues" type="checkbox"> 開／關麥提示音</label>
+    <div class="field sub" id="cue-volume-field">
+      <span>提示音音量 <b id="cue-volume-val"></b> <button type="button" class="ghost small-btn" id="cue-preview">試聽</button></span>
+      <input id="cue-volume" type="range" min="0" max="3" step="0.05" aria-label="提示音音量">
+      <small class="muted">放開滑桿會試聽一次；提示音也跟著輸出音量。</small>
+    </div>
     <label class="check"><input id="wakelock" type="checkbox"> 在房間裡時保持螢幕開啟（手機建議開）</label>
     <p class="muted small" id="net-text"></p>
   </details>

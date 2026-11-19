@@ -60,6 +60,8 @@ pub struct AudioOpts {
     pub volume: f32,
     /// 開／關麥提示音
     pub cues: bool,
+    /// 提示音音量倍率（1.0 = 原本；也跟著輸出音量）
+    pub cue_volume: f32,
     /// 進房時麥克風先靜音（桌面版預設開；要說話時自己打開）
     pub start_muted: bool,
 }
@@ -79,6 +81,7 @@ impl Default for AudioOpts {
             buffer_ms: 30,
             volume: 1.0,
             cues: true,
+            cue_volume: 1.0,
             start_muted: false,
         }
     }
@@ -150,6 +153,7 @@ pub struct Shared {
     /// PTT 鍵 → 對應的頻道遮罩
     ptt_keys: Mutex<Vec<(Hotkey, u64)>>,
     cues: AtomicBool,
+    cue_volume: AtomicU32,
     /// 待播的提示音（播放執行緒取走；新的蓋掉舊的）
     cue: Mutex<Option<Cue>>,
     /// 目前實際送出的 talk_mask
@@ -201,6 +205,7 @@ impl Shared {
             open_mask: AtomicU64::new(0),
             ptt_keys: Mutex::new(Vec::new()),
             cues: AtomicBool::new(true),
+            cue_volume: AtomicU32::new(1.0f32.to_bits()),
             cue: Mutex::new(None),
             tx_mask: AtomicU64::new(0),
             seq: AtomicU32::new(0),
@@ -224,6 +229,7 @@ impl Shared {
         self.strong_denoise.store(o.strong_denoise, Ordering::Relaxed);
         store_f32(&self.volume, o.volume);
         self.cues.store(o.cues, Ordering::Relaxed);
+        store_f32(&self.cue_volume, o.cue_volume.clamp(0.0, crate::talk::MAX_CUE_VOLUME));
     }
 
     /// 實際上是否不送出聲音：自己靜音，或拒聽中（拒聽一定連麥克風一起關）
@@ -257,6 +263,11 @@ impl Shared {
         if self.cues.load(Ordering::Relaxed) {
             *self.cue.lock().unwrap() = Some(c);
         }
+    }
+
+    /// 試聽提示音：不管提示音開關，播一次「開始按鍵說話」
+    pub fn preview_cue(&self) {
+        *self.cue.lock().unwrap() = Some(Cue::PttOn(0));
     }
 
     pub fn channel_cfgs(&self) -> BTreeMap<ChannelId, ChannelCfg> {
@@ -900,11 +911,11 @@ fn spawn_playback(
             } else if vol != 1.0 {
                 mix.iter_mut().for_each(|s| *s *= vol);
             }
-            // 提示音：拒聽時也播（自己的狀態提示），跟著輸出音量
+            // 提示音：拒聽時也播（自己的狀態提示），跟著輸出音量，再乘上提示音音量
             if let Some(c) = shared.cue.lock().unwrap().take() {
                 tones.play(c);
             }
-            tones.mix_into(&mut mix, vol);
+            tones.mix_into(&mut mix, vol * load_f32(&shared.cue_volume));
             soft_clip(&mut mix);
             res.clear();
             rs.process(&mix, &mut res);

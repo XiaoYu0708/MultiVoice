@@ -32,6 +32,8 @@ pub struct Settings {
     pub member_volumes: BTreeMap<String, f32>,
     /// 開／關麥提示音
     pub cues: bool,
+    /// 提示音音量（1.0 = 100%；也跟著輸出音量）
+    pub cue_volume: f32,
     /// 在房間中關閉視窗時縮到系統匣（不離開房間）
     pub close_to_tray: bool,
     /// 房主離開或斷線時可以由我接手當房主
@@ -65,6 +67,7 @@ impl Default for Settings {
             ptt_keys: BTreeMap::new(),
             member_volumes: BTreeMap::new(),
             cues: true,
+            cue_volume: 1.0,
             close_to_tray: true,
             allow_host: true,
             presets: Vec::new(),
@@ -132,6 +135,7 @@ impl Settings {
             strong_denoise: self.strong_denoise,
             volume: self.output_volume,
             cues: self.cues,
+            cue_volume: self.cue_volume,
             // 進房時麥克風預設關閉（使用者要求，2026-11-16）
             start_muted: true,
             ..Default::default()
@@ -197,6 +201,17 @@ mod tests {
             name: name.into(),
             channels: chans.iter().map(|c| PresetChannel { channel: c.to_string(), ..Default::default() }).collect(),
         }
+    }
+
+    #[test]
+    fn cue_volume_saved() {
+        // 舊版設定檔沒有這個欄位：100%
+        let old: Settings = toml::from_str("cues = true").unwrap();
+        assert_eq!(old.cue_volume, 1.0);
+        let s = Settings { cue_volume: 0.4, ..Default::default() };
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.cue_volume, 0.4);
+        assert_eq!(back.audio_opts().cue_volume, 0.4);
     }
 
     #[test]

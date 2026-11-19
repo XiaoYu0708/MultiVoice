@@ -93,6 +93,9 @@ const NOTE_SAMPLES: usize = 48_000 * 45 / 1000; // 45 ms
 const FADE: usize = 48_000 * 5 / 1000;
 const TONE_GAIN: f32 = 0.12;
 
+/// 提示音音量（使用者設定的倍率）的上限：300%
+pub const MAX_CUE_VOLUME: f32 = 3.0;
+
 /// 正在播放的提示音（播放執行緒持有）
 #[derive(Default)]
 pub struct TonePlayer {
@@ -105,6 +108,11 @@ impl TonePlayer {
     pub fn play(&mut self, cue: Cue) {
         self.cur = Some((cue.notes(), 0));
         self.phase = 0.0;
+    }
+
+    /// 還在播放中
+    pub fn playing(&self) -> bool {
+        self.cur.is_some()
     }
 
     /// 混進交錯立體聲的 buffer

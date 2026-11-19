@@ -69,6 +69,8 @@ pub struct Engine {
     pub muted: bool,
     pub deafened: bool,
     pub cues: bool,
+    /// 提示音音量倍率（也跟著輸出音量）
+    pub cue_volume: f32,
     pub volume: f32,
     pub gate_db: f32,
     /// 降噪（RNNoise）：開著時送出降噪後的聲音；關掉時仍用 RNNoise 算人聲機率，但聲音不改
@@ -127,6 +129,7 @@ impl Engine {
             muted: false,
             deafened: false,
             cues: true,
+            cue_volume: 1.0,
             volume: 1.0,
             gate_db: DEFAULT_GATE_DBFS,
             denoise: true,
@@ -218,6 +221,11 @@ impl Engine {
         if self.cues {
             self.tones.play(c);
         }
+    }
+
+    /// 試聽提示音（調整提示音音量時用）：不管提示音開關，播一次「開始按鍵說話」
+    pub fn preview_cue(&mut self) {
+        self.tones.play(Cue::PttOn(0));
     }
 
     /// 強力降噪：`cap` 剛湊滿一段，先存原音再就地降噪
@@ -373,8 +381,8 @@ impl Engine {
             let v = self.volume;
             self.mix.iter_mut().for_each(|s| *s *= v);
         }
-        // 提示音：拒聽時也播，跟著輸出音量
-        self.tones.mix_into(&mut self.mix, self.volume);
+        // 提示音：拒聽時也播，跟著輸出音量，再乘上提示音音量
+        self.tones.mix_into(&mut self.mix, self.volume * self.cue_volume);
         soft_clip(&mut self.mix);
     }
 
