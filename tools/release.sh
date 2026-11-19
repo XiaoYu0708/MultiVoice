@@ -15,6 +15,25 @@ NOTES="${2:-MultiVoice v$VER}"
 VER="${VER#v}"
 cd "$(dirname "$0")/.."
 
+# 每次發佈都附上「下載哪個檔案」的說明（三個檔案由 .github/workflows/release.yml 附上）
+DOWNLOADS=$(cat <<'EOF'
+## 下載哪個檔案？
+
+| 檔案 | 說明 |
+|---|---|
+| **MultiVoice-Setup.exe** | **安裝版（第一次用推薦這個）**：安裝到電腦，開始選單會有捷徑（可以選擇建立桌面捷徑），之後可以從 Windows「設定 › 應用程式」解除安裝。不需要系統管理員權限 |
+| **multivoice.exe** | **免安裝版**：下載後直接執行，放在任何資料夾都可以（例如隨身碟），不用安裝也不會留下捷徑。不想用了直接刪掉檔案就好 |
+| **multivoice-cli.exe** | **命令列版**：沒有視窗，給除錯、自動測試或進階使用者用，**一般人不用下載** |
+
+- 安裝版和免安裝版的功能完全一樣，設定也共用（存在 `%APPDATA%\MultiVoice`），選一個就好
+- 已經在用的人不用重新下載：程式啟動時會在畫面上方提示新版，按一下就能更新（安裝版和免安裝版都可以）
+- 沒有 Windows 電腦（手機、Mac）：直接用網頁版 https://multivoice.xiaoyu0708.ip-ddns.com/ ，不用下載
+EOF
+)
+NOTES="$NOTES
+
+$DOWNLOADS"
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "工作目錄有未提交的變更，先 commit 再發佈" >&2
   exit 1

@@ -66,6 +66,8 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   發佈的 exe 不用本機 GNU 版：GNU 編的 exe 曾被 Defender 機器學習誤判（`Bearfoos.A!ml`、`Wacatac.B!ml`），MSVC 版實測沒被擋。
   手動執行該 workflow（`gh workflow run release.yml`）只建置不發佈，exe 在 Artifacts `multivoice-windows`
   **發佈前要先問使用者**（會公開執行檔）
+- **每次發佈的說明都要附上「下載哪個檔案」**：`MultiVoice-Setup.exe`（安裝版）、`multivoice.exe`（免安裝版，一鍵更新也是下載它）、`multivoice-cli.exe`（命令列版，一般人不用）各自的用途。
+  `tools/release.sh` 會自動把這段加在更新說明後面；不用腳本、手動發佈時也要加
 - 桌面版啟動時查 GitHub 最新 Release（`desktop/src/update.rs`），比目前版本新就在畫面上方提示；
   測試提示列：環境變數 `MULTIVOICE_TEST_VERSION=0.0.1`
 - 協定版本（`protocol::PROTOCOL_VERSION`）不相容時要提高，並在發佈說明提醒大家一起更新
