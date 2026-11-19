@@ -17,6 +17,7 @@
 //!   --seconds <秒>       時間到自動離開（自動測試用）
 //!   --channel <名稱>     建立這個頻道並在裡面一直開麥，大廳改為只聽（可重複；自動測試用）
 //!   --no-host            不當房主候補（房主離開時不會由我接手）
+//!   --kick-after <秒>    我是房主時，這麼久之後移出其他所有人（自動測試用）
 //!
 //! 執行中：輸入 m + Enter 切換靜音，q + Enter 離開。
 
@@ -33,6 +34,7 @@ struct Opts {
     relays: Relays,
     audio: AudioOpts,
     seconds: Option<u64>,
+    kick_after: Option<u64>,
     channels: Vec<String>,
     /// 可以當房主候補（`--no-host` 關掉）
     can_host: bool,
@@ -53,6 +55,7 @@ fn parse_args() -> Result<Opts> {
         relays: Relays::Default,
         audio: AudioOpts::default(),
         seconds: None,
+        kick_after: None,
         channels: Vec::new(),
         can_host: true,
     };
@@ -74,6 +77,7 @@ fn parse_args() -> Result<Opts> {
             "--buffer" => o.audio.buffer_ms = val()?.parse()?,
             "--volume" => o.audio.volume = val()?.parse()?,
             "--seconds" => o.seconds = Some(val()?.parse()?),
+            "--kick-after" => o.kick_after = Some(val()?.parse()?),
             "--channel" => o.channels.push(val()?),
             "--no-host" => o.can_host = false,
             _ if o.ticket.is_none() && !a.starts_with("--") => o.ticket = Some(a),
@@ -118,12 +122,12 @@ async fn main() -> Result<()> {
     if !o.channels.is_empty() {
         setup_channels(&s, &o.channels).await?;
     }
-    run_ui(&s, o.seconds).await;
+    run_ui(&s, o.seconds, o.kick_after).await;
     s.leave().await;
     Ok(())
 }
 
-async fn run_ui(s: &Session, seconds: Option<u64>) {
+async fn run_ui(s: &Session, seconds: Option<u64>, kick_after: Option<u64>) {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     std::thread::spawn(move || {
         let mut line = String::new();
@@ -139,9 +143,17 @@ async fn run_ui(s: &Session, seconds: Option<u64>) {
     let mut stdin_open = true;
     let mut log_seen = 0;
     let deadline = seconds.map(|s| Instant::now() + Duration::from_secs(s));
+    let mut kick_at = kick_after.map(|s| Instant::now() + Duration::from_secs(s));
     loop {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             break;
+        }
+        if kick_at.is_some_and(|d| Instant::now() >= d) {
+            kick_at = None;
+            for m in s.snapshot().members {
+                println!("移出 #{} {}", m.idx, m.name);
+                s.kick(m.idx);
+            }
         }
         tokio::select! {
             cmd = cmd_rx.recv(), if stdin_open => match cmd.as_deref() {

@@ -93,6 +93,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 重取樣：這台電腦的裝置都是 48 kHz，測非 48 kHz 路徑用環境變數 `MULTIVOICE_TEST_RATES=輸入,輸出`（例如 `44100,44100`；
   輸出任何取樣率都可以（Windows 轉換），輸入要裝置原生支援）；`cargo run -p audio --example rates` 列出各裝置預設取樣率
 - 沒有麥克風（只聽）：桌面版／CLI 用環境變數 `MULTIVOICE_TEST_NO_MIC=1`；網頁版用 `tools/headless.mjs … --no-mic`
+- 房主操作測試：CLI 房主加 `--kick-after N`（N 秒後移出其他所有人，用來看被移出的畫面）；桌面版環境變數 `MULTIVOICE_TEST_CONFIRM=kick|transfer|rotate` 進房後直接打開確認對話框（截圖用，不用自動點擊）
 - 端對端煙霧測試：背景跑 `multivoice-cli host --open-mic --volume 0 --seconds N`，從輸出抓 `mv1…` 邀請票（輸出有 emoji，grep 會當成二進位檔，要用 `grep -ao`），再跑 `multivoice-cli join <票> --profile 別的名稱 …`
 - **UI 驗證**：`tools/shot.ps1` 會啟動桌面版、用 PrintWindow 截圖（不怕被其他視窗蓋住），再用 Read 看圖：
   ```bash

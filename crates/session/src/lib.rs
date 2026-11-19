@@ -178,6 +178,8 @@ pub struct Snapshot {
     pub log: Vec<String>,
     /// 連線已中斷時的原因
     pub disconnected: Option<String>,
+    /// 最近一次房主操作的結果（約 6 秒內）：(文字, 是不是錯誤)
+    pub notice: Option<(String, bool)>,
 }
 
 #[derive(Default)]
@@ -190,6 +192,10 @@ struct RoomState {
     disconnected: Option<String>,
     /// 換房主期間大家陸續重連，這段時間不記「某某加入／離開了」
     quiet_until: Option<std::time::Instant>,
+    /// 房主操作的結果提示：(文字, 是不是錯誤, 時間)
+    notice: Option<(String, bool, std::time::Instant)>,
+    /// 我剛要求移出的成員：他離開時提示「已移出」
+    kicking: Option<SessionIdx>,
 }
 
 impl RoomState {
@@ -199,6 +205,10 @@ impl RoomState {
 
     fn hush(&mut self) {
         self.quiet_until = Some(std::time::Instant::now() + Duration::from_secs(8));
+    }
+
+    fn notify(&mut self, s: String, error: bool) {
+        self.notice = Some((s, error, std::time::Instant::now()));
     }
 
     fn push_log(&mut self, s: String) {
@@ -332,7 +342,11 @@ impl Session {
                     }
                     ClientEvent::MemberLeft(i) => {
                         let name = r.names.get(&i).cloned().unwrap_or_else(|| format!("#{i}"));
-                        if !r.quiet() {
+                        if r.kicking == Some(i) {
+                            r.kicking = None;
+                            r.push_log(format!("已移出 {name}"));
+                            r.notify(format!("已移出 {name}。邀請連結也換了，要邀人請重新複製"), false);
+                        } else if !r.quiet() {
                             r.push_log(format!("{name} 離開了"));
                         }
                         shared2.forget(i);
@@ -372,7 +386,11 @@ impl Session {
                         shared2.set_cfg(id, None);
                         shared2.rebuild(&client2.my_slots());
                     }
-                    ClientEvent::HostError(_, msg) => r.push_log(format!("房主拒絕：{msg}")),
+                    ClientEvent::HostError(_, msg) => {
+                        r.push_log(format!("房主拒絕：{msg}"));
+                        r.kicking = None;
+                        r.notify(format!("沒有完成：{msg}"), true);
+                    }
                     ClientEvent::SubscriptionChanged(_) => {}
                     ClientEvent::Rtt(ms) => r.ping = Some(ms),
                     ClientEvent::Disconnected(why) => {
@@ -391,10 +409,17 @@ impl Session {
                                 .unwrap_or_else(|| "其他人".into())
                         };
                         r.push_log(format!("{name}成為房主"));
+                        r.notify(
+                            if name == "你" { "你成為房主了：可以管理頻道與成員".into() } else { format!("房主已交給 {name}") },
+                            false,
+                        );
                     }
-                    ClientEvent::InviteChanged => r.push_log("邀請連結已更換，舊的連結不能再用".into()),
+                    ClientEvent::InviteChanged => {
+                        r.push_log("邀請連結已更換，舊的連結不能再用".into());
+                        r.notify("邀請連結已更換，舊的連結不能再用；要邀人請重新複製".into(), false);
+                    }
                     ClientEvent::Kicked => {
-                        let why = "你被房主移出房間".to_string();
+                        let why = "你被房主移出房間。要回來請跟房主要新的邀請連結".to_string();
                         r.push_log(why.clone());
                         r.disconnected = Some(why);
                         takeover2.on_kicked();
@@ -460,6 +485,7 @@ impl Session {
 
     /// 房主：移出成員（同時更換邀請）
     pub fn kick(&self, idx: SessionIdx) {
+        self.room.lock().unwrap().kicking = Some(idx);
         self.client.kick(idx);
     }
 
@@ -565,6 +591,11 @@ impl Session {
             underruns: self.shared.underruns(),
             log: r.log.iter().cloned().collect(),
             disconnected: r.disconnected.clone(),
+            notice: r
+                .notice
+                .as_ref()
+                .filter(|n| n.2.elapsed() < Duration::from_secs(6))
+                .map(|n| (n.0.clone(), n.1)),
         }
     }
 

@@ -213,7 +213,7 @@ fn handle_event(inner: &Rc<Inner>, ev: ClientEvent) -> serde_json::Value {
         ClientEvent::Reconnected { .. } => json!({ "type": "log", "text": "已連上房主" }),
         ClientEvent::Disconnected(reason) => json!({ "type": "disconnected", "text": reason }),
         // client-core 已經結束連線，不會重連
-        ClientEvent::Kicked => json!({ "type": "disconnected", "text": "你被房主移出房間" }),
+        ClientEvent::Kicked => json!({ "type": "disconnected", "text": "你被房主移出房間。要回來請跟房主要新的邀請連結" }),
         // 網址列的邀請票也要換成新的（重新整理頁面才回得來）
         ClientEvent::InviteChanged => json!({ "type": "invite", "text": "邀請連結已更換，舊的連結不能再用" }),
         ClientEvent::OwnerChanged(_) => json!({ "type": "room" }),

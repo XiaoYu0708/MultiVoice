@@ -45,8 +45,8 @@ pub struct App {
     local_down: Vec<hotkeys::Trigger>,
     /// 按了一次「刪除」、等待確認的頻道與時間
     confirm_delete: Option<(u32, Instant)>,
-    /// 按了一次「更換邀請」、等待確認的時間
-    confirm_rotate: Option<Instant>,
+    /// 等使用者確認的房主操作（確認對話框）
+    confirm: Option<Confirm>,
     /// 系統匣圖示（建立失敗時 None，關閉視窗就直接結束）
     tray: Option<std::sync::Arc<Tray>>,
     /// 這次執行是否已經顯示過「仍在執行」通知
@@ -139,7 +139,7 @@ impl App {
             hotkey_err: hotkeys::start().err(),
             local_down: Vec::new(),
             confirm_delete: None,
-            confirm_rotate: None,
+            confirm: None,
             tray,
             tray_notified: false,
             preset_sel: last_preset,
@@ -550,7 +550,34 @@ impl App {
         }
     }
 
+    /// 連線已結束（含被移出）：只顯示原因與回到大廳，不再顯示已經不正確的房間狀態
+    fn gone(&mut self, ui: &mut egui::Ui, why: &str) {
+        let mut back = false;
+        style::card(ui).stroke(egui::Stroke::new(1.5, RED)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("已經離開房間").strong().size(17.0).color(RED));
+            ui.add_space(2.0);
+            ui.label(why);
+            ui.add_space(10.0);
+            back = style::primary_button(ui, true, "回到大廳", egui::vec2(ui.available_width(), 40.0)).clicked();
+        });
+        if back {
+            self.leave();
+        }
+    }
+
     fn room(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        // 測試用：環境變數 MULTIVOICE_TEST_CONFIRM=kick|transfer|rotate 進房後直接打開確認對話框（截圖驗證用）
+        static TEST_CONFIRM: std::sync::Once = std::sync::Once::new();
+        TEST_CONFIRM.call_once(|| {
+            self.confirm = match std::env::var("MULTIVOICE_TEST_CONFIRM").as_deref() {
+                Ok("kick") => Some(Confirm::Kick(u16::MAX, "測試成員".into())),
+                Ok("transfer") => Some(Confirm::Transfer(u16::MAX, "測試成員".into())),
+                Ok("rotate") => Some(Confirm::Rotate),
+                _ => None,
+            };
+        });
+        self.confirm_modal(ui);
         // 我聽各成員的音量（依名稱存，套到目前的成員編號）
         if let Some(s) = &self.session {
             let gains = snap
@@ -583,27 +610,21 @@ impl App {
                         ui.ctx().copy_text(format!("{}#{}", session::WEB_CLIENT_URL, snap.ticket));
                         self.copied_at = Some(Instant::now());
                     }
-                    // 房主：更換邀請（要按兩次，3 秒內）
+                    // 房主：更換邀請（會讓舊連結失效，先跳確認）
                     if snap.is_owner
-                        && let Some(s) = &self.session
-                    {
-                        let confirming = self.confirm_rotate.is_some_and(|t| t.elapsed() < Duration::from_secs(3));
-                        if confirming {
-                            if ui.add(egui::Button::new(RichText::new("確定更換").color(RED))).clicked() {
-                                s.rotate_invite();
-                                self.confirm_rotate = None;
-                            }
-                        } else if ui
-                            .button("更換邀請")
+                        && ui
+                            .button("更換邀請…")
                             .on_hover_text("舊的邀請連結全部失效（已經在房間裡的人不受影響）")
                             .clicked()
-                        {
-                            self.confirm_rotate = Some(Instant::now());
-                        }
+                    {
+                        self.confirm = Some(Confirm::Rotate);
                     }
                 });
             });
             ui.weak("把邀請連結傳給朋友：有裝程式的貼上就能加入，沒裝的直接打開用瀏覽器加入");
+            if let Some((text, error)) = &snap.notice {
+                ui.colored_label(if *error { AMBER } else { GREEN }, text);
+            }
             if !snap.is_owner {
                 match &snap.owner_name {
                     Some(n) => ui.weak(format!("房主：{n}")),
@@ -695,11 +716,6 @@ impl App {
                 self.new_channel.clear();
             }
         });
-
-        if let Some(why) = &snap.disconnected {
-            ui.add_space(6.0);
-            ui.colored_label(RED, format!("連線中斷：{why}"));
-        }
 
         // 設定有變就套用（例如系統匣或其他地方改了設定）：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
         let opts = self.settings.audio_opts();
@@ -1006,6 +1022,8 @@ impl App {
         let mut record: Option<KeyTarget> = None;
         // 右鍵調整某位成員的音量：(名稱, 新倍率；None = 重設)
         let mut vol_change: Option<(String, Option<f32>)> = None;
+        // 房主在「管理」選單選的操作，結束後跳確認對話框
+        let mut ask: Option<Confirm> = None;
         let volumes = self.settings.member_volumes.clone();
         let speaking = ch.members.iter().any(|m| m.speaking);
         style::channel_card(ui, joined, speaking).show(ui, |ui| {
@@ -1135,7 +1153,7 @@ impl App {
                                 let gain = volumes.get(&m.name).copied().unwrap_or(1.0);
                                 let r = ui
                                     .add(egui::Label::new(&m.name).sense(egui::Sense::click()))
-                                    .on_hover_text(if is_owner { "右鍵：調整音量、移出房間、交出房主" } else { "右鍵：調整聽這個人的音量" });
+                                    .on_hover_text("右鍵：調整聽這個人的音量");
                                 if gain != 1.0 {
                                     ui.colored_label(if gain == 0.0 { RED } else { AMBER }, pct(gain));
                                 }
@@ -1158,31 +1176,30 @@ impl App {
                                         }
                                     });
                                     ui.weak("只影響你聽到的音量");
-                                    if is_owner {
-                                        ui.separator();
-                                        let r = ui
-                                            .add_enabled(m.can_own, egui::Button::new("把房主交給他"))
-                                            .on_hover_text("他之後可以改名、刪除頻道、移出成員；你會變成一般成員")
-                                            .on_disabled_hover_text("只能交給用桌面版的成員（網頁版不能當房主）");
-                                        if r.clicked() {
-                                            s.transfer_owner(m.idx);
-                                            ui.close();
-                                        }
-                                        // 選單點一下就會關：用子選單當確認
-                                        ui.menu_button(RichText::new("移出房間").color(RED), |ui| {
-                                            ui.weak("邀請連結會一起更換，他拿舊連結回不來；");
-                                            ui.weak("房間裡的其他人會自動拿到新連結");
-                                            if ui.button(RichText::new(format!("確定移出 {}", m.name)).color(RED)).clicked() {
-                                                s.kick(m.idx);
-                                            }
-                                        });
-                                    }
                                 });
                             }
                             if m.listen && !m.talk {
                                 ui.weak("只聽");
                             } else if m.talk && !m.listen {
                                 ui.weak("只說");
+                            }
+                            if is_owner && !m.is_me {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.menu_button("管理", |ui| {
+                                        let r = ui
+                                            .add_enabled(m.can_own, egui::Button::new("把房主交給他…"))
+                                            .on_hover_text("他之後可以改名、刪除頻道、移出成員；你會變成一般成員")
+                                            .on_disabled_hover_text("只能交給用桌面版的成員（網頁版不能當房主）");
+                                        if r.clicked() {
+                                            ask = Some(Confirm::Transfer(m.idx, m.name.clone()));
+                                        }
+                                        ui.separator();
+                                        // 危險操作：紅字、跟一般操作用分隔線隔開
+                                        if ui.button(RichText::new("移出房間…").color(RED)).clicked() {
+                                            ask = Some(Confirm::Kick(m.idx, m.name.clone()));
+                                        }
+                                    });
+                                });
                             }
                         });
                     }
@@ -1192,6 +1209,9 @@ impl App {
         if let Some(t) = record {
             self.start_recording(t);
         }
+        if ask.is_some() {
+            self.confirm = ask;
+        }
         if let Some((name, v)) = vol_change {
             match v {
                 Some(g) if (g - 1.0).abs() > 0.005 => {
@@ -1200,6 +1220,70 @@ impl App {
                 _ => {
                     self.settings.member_volumes.remove(&name);
                 }
+            }
+        }
+    }
+
+    /// 房主操作的確認對話框：說清楚後果，危險的按鈕用紅底；Esc 或點外面就是取消
+    fn confirm_modal(&mut self, ui: &mut egui::Ui) {
+        let Some(c) = &self.confirm else { return };
+        let (title, body, ok, danger) = match c {
+            Confirm::Kick(_, name) => (
+                format!("移出 {name}？"),
+                "他會馬上離開房間。邀請連結也會一起更換，他拿舊連結回不來；房間裡的其他人會自動拿到新連結，還沒進房的朋友要重新傳給他們。"
+                    .to_string(),
+                "移出",
+                true,
+            ),
+            Confirm::Transfer(_, name) => (
+                format!("把房主交給 {name}？"),
+                "之後由他改名、刪除頻道、移出成員、更換邀請；你會變成一般成員，要他交回來才能再管理。".to_string(),
+                "交給他",
+                false,
+            ),
+            Confirm::Rotate => (
+                "更換邀請連結？".to_string(),
+                "舊的邀請連結全部失效，還沒進房的朋友要重新傳給他們。已經在房間裡的人不受影響。".to_string(),
+                "更換",
+                true,
+            ),
+        };
+        let mut decided: Option<bool> = None;
+        let r = egui::Modal::new(egui::Id::unique("owner-confirm")).show(ui.ctx(), |ui| {
+            ui.set_width(320.0);
+            ui.label(RichText::new(title).strong().size(17.0));
+            ui.add_space(6.0);
+            ui.label(body);
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let size = egui::vec2(88.0, 32.0);
+                let ok = if danger {
+                    ui.add(
+                        egui::Button::new(RichText::new(ok).strong().color(Color32::WHITE))
+                            .fill(RED)
+                            .min_size(size),
+                    )
+                } else {
+                    style::primary_button(ui, true, ok, size)
+                };
+                if ok.clicked() {
+                    decided = Some(true);
+                }
+                if ui.add(egui::Button::new("取消").min_size(size)).clicked() {
+                    decided = Some(false);
+                }
+            });
+        });
+        if decided.is_none() && r.should_close() {
+            decided = Some(false);
+        }
+        let Some(yes) = decided else { return };
+        let c = self.confirm.take().unwrap();
+        if let (true, Some(s)) = (yes, &self.session) {
+            match c {
+                Confirm::Kick(idx, _) => s.kick(idx),
+                Confirm::Transfer(idx, _) => s.transfer_owner(idx),
+                Confirm::Rotate => s.rotate_invite(),
             }
         }
     }
@@ -1301,7 +1385,8 @@ impl eframe::App for App {
             self.settings.follow_renames(&mut self.channel_names, snap.channels.iter().map(|c| (c.id, c.name.as_str())));
         }
         self.poll_recording(snap.as_ref());
-        if let Some(snap) = &snap {
+        let gone = snap.as_ref().and_then(|s| s.disconnected.clone());
+        if let Some(snap) = snap.as_ref().filter(|_| gone.is_none()) {
             egui::Panel::bottom("controls")
                 .frame(style::dock_frame(ui))
                 .show(ui, |ui| self.controls(ui, snap));
@@ -1329,6 +1414,10 @@ impl eframe::App for App {
                 }
             });
             ui.add_space(4.0);
+            if let Some(why) = &gone {
+                self.gone(ui, why);
+                return;
+            }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match &snap {
                 Some(snap) => self.room(ui, snap),
                 None => self.lobby(ui),
@@ -1347,6 +1436,16 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(Duration::from_millis(500));
         }
     }
+}
+
+/// 等使用者確認的房主操作
+enum Confirm {
+    /// 移出成員（編號、名稱）
+    Kick(u16, String),
+    /// 把房主交給他（編號、名稱）
+    Transfer(u16, String),
+    /// 更換邀請
+    Rotate,
 }
 
 /// 裝置名稱很長（例如「Microphone (Razer Seiren V3 Mini) [Microphone]」），只取括號內的型號
