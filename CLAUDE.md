@@ -66,6 +66,12 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   發佈的 exe 不用本機 GNU 版：GNU 編的 exe 曾被 Defender 機器學習誤判（`Bearfoos.A!ml`、`Wacatac.B!ml`），MSVC 版實測沒被擋。
   手動執行該 workflow（`gh workflow run release.yml`）只建置不發佈，exe 在 Artifacts `multivoice-windows`
   **發佈前要先問使用者**（會公開執行檔）
+- **每次更新版本，桌面版、網頁版、Android 版都要一起更新**（版本號一致、功能與操作一致）：
+  - 桌面版：`tools/release.sh` 發佈 exe
+  - 網頁版：`tools/release.sh` 最後會重新編譯並部署
+  - Android 版：另一個專案 `C:\Users\XiaoYu\Projects\App開發\MultiVoice-Android`（原生 Kotlin，透過 JNI 用這裡的 Rust crates，建置方式見該專案的 `CLAUDE.md`）。
+    `versionName` 改成同一個版本號、`versionCode` 加 1，重新編譯簽好的 AAB／APK
+  - 改了協定或共用 crates（`client-core`、`mixer-core`、`transport`、`protocol`）時，三個版本都要重新編譯並測試互通
 - **每次發佈的說明都要附上「下載哪個檔案」**：`MultiVoice-Setup.exe`（安裝版）、`multivoice.exe`（免安裝版，一鍵更新也是下載它）、`multivoice-cli.exe`（命令列版，一般人不用）各自的用途。
   `tools/release.sh` 會自動把這段加在更新說明後面；不用腳本、手動發佈時也要加
 - 桌面版啟動時查 GitHub 最新 Release（`desktop/src/update.rs`），比目前版本新就在畫面上方提示；
