@@ -4191,6 +4191,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "room-server"
+version = "0.10.5"
+dependencies = [
+ "anyhow",
+ "host-core",
+ "protocol",
+ "tokio",
+ "tracing-subscriber",
+ "transport",
+]
+
+[[package]]
 name = "rtrb"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

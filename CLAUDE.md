@@ -50,13 +50,14 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、RNNoise 降噪（開著時關掉瀏覽器自己的降噪）、VAD、jitter buffer、混音；強力降噪透過匯入函式 `mv.dfn` 呼叫 `web-dfn` |
 | `web-dfn` | 網頁版強力降噪（DeepFilterNet3，含權重約 5.5 MB）：獨立的 `web_dfn.wasm`，用 SIMD128 建置，開了才下載，由 `worklet.js` 載入 |
 | `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔（房間的頻道 + 我在各頻道的設定；開房時可選一個自動建好頻道）、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個、`crash.rs` 錯誤對話框與 OpenGL→wgpu 備援） |
+| `room-server` | 常駐房間（`multivoice-room-server`）：只轉發、沒有音訊，房間 ID／密鑰／端點金鑰存在 `--state` 檔，重開後邀請票不變；管理者是沒人持有的身分（沒人能換邀請、移出成員）。`deploy/` 的 Docker 服務 `room-server` 跑一個給 Play 商店審查用的房間 |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
 
 `vendor/dfn3_rs`：DeepFilterNet3 推論（crates.io 0.1.2 + 自己加的 wasm SIMD128 kernel，見 `vendor/dfn3_rs/MULTIVOICE.md`），
 根目錄 `Cargo.toml` 的 `[patch.crates-io]` 讓桌面版與網頁版都用這份。
 
-伺服器端基礎設施在 `deploy/`（Docker：Caddy + 自架 iroh-relay，`relay.xiaoyu0708.ip-ddns.com`）。
+伺服器端基礎設施在 `deploy/`（Docker：Caddy + 自架 iroh-relay，`relay.xiaoyu0708.ip-ddns.com`；常駐房間 `room-server`，邀請票 `docker compose -f deploy/docker-compose.yml exec room-server cat /data/ticket.txt`，**這個邀請連結填在 Play Console 的「應用程式存取權」，不要刪 `room_data` volume**）。
 
 ## 版本控制與發佈
 - GitHub：`XiaoYu0708/MultiVoice`（**公開**儲存庫，分支 `master`）。文件不要寫入使用者的個人環境細節（使用者路徑、內網 IP、其他服務名稱）
@@ -69,7 +70,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - **每次更新版本，桌面版、網頁版、Android 版都要一起更新**（版本號一致、功能與操作一致）：
   - 桌面版：`tools/release.sh` 發佈 exe
   - 網頁版：`tools/release.sh` 最後會重新編譯並部署
-  - Android 版：另一個專案 `C:\Users\XiaoYu\Projects\App開發\MultiVoice-Android`（原生 Kotlin，透過 JNI 用這裡的 Rust crates，建置方式見該專案的 `CLAUDE.md`；
+  - Android 版：另一個專案 `MultiVoice-Android`（本機位置記在 Claude 的記憶裡；原生 Kotlin，透過 JNI 用這裡的 Rust crates，建置方式見該專案的 `CLAUDE.md`；
     GitHub `XiaoYu0708/MultiVoice-Android` 是**私人**儲存庫，裡面有簽章金鑰，不能改成公開）。
     `versionName` 改成同一個版本號、`versionCode` 加 1，重新編譯簽好的 AAB／APK，
     **APK 要一起附到這個儲存庫的 GitHub Release**（和 exe 放在同一個 Release；「下載哪個檔案」說明也要列出 APK）

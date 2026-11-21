@@ -2,6 +2,8 @@
 #
 #   caddy       HTTPS 憑證（Let's Encrypt）+ 網頁版 + 反向代理 relay
 #   iroh-relay  自架 relay；憑證直接讀 Caddy 申請好的檔案（Reloading 模式，自動跟著續期）
+#   room-server 常駐房間（給 Play 商店審查人員等用的測試房間），邀請票：
+#               docker compose -f deploy/docker-compose.yml exec room-server cat /data/ticket.txt
 #
 # 對外需要轉發到這台電腦的埠：TCP 80、TCP 443、UDP 7842
 #
@@ -37,6 +39,24 @@ services:
     depends_on:
       - caddy
 
+  room-server:
+    build:
+      context: ..
+      dockerfile: deploy/room-server.Dockerfile
+      secrets:
+        - multivoice_relay_token
+    restart: unless-stopped
+    # 頻道每次啟動都建好；房間 ID／密鑰存在 room_data（刪掉 volume＝換新房間，舊邀請連結失效）
+    command: ["--channel", "小隊A", "--channel", "小隊B", "--channel", "指揮"]
+    volumes:
+      - room_data:/data
+
+secrets:
+  # 值在 deploy/.env（不納入 git）
+  multivoice_relay_token:
+    environment: MULTIVOICE_RELAY_TOKEN
+
 volumes:
   caddy_data:
   caddy_config:
+  room_data:

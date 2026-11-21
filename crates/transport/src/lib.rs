@@ -146,3 +146,8 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
 pub fn generate_secret() -> SecretKey {
     SecretKey::from_bytes(&random_bytes())
 }
+
+/// 從存下來的 32 bytes 還原金鑰（要重開後端點 ID 不變時用，例如常駐房間）
+pub fn secret_from_bytes(b: &[u8; 32]) -> SecretKey {
+    SecretKey::from_bytes(b)
+}

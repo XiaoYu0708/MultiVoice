@@ -1,0 +1,7 @@
+# Docker 建置內容（目前只有 deploy/room-server.Dockerfile 用整個儲存庫當 context）
+# .cargo/config.toml 是本機設定（含 relay 權杖、Windows 的 target 路徑），絕對不能進映像
+.cargo
+.git
+dist
+deploy/web
+**/target

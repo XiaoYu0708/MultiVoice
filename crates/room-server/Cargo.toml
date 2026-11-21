@@ -1,0 +1,18 @@
+[package]
+name = "room-server"
+description = "MultiVoice 常駐房間：只轉發、沒有音訊，邀請票重開後不變（例如給 App 審查人員用的測試房間）"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "multivoice-room-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+host-core = { path = "../host-core" }
+protocol = { path = "../protocol" }
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+transport = { path = "../transport" }

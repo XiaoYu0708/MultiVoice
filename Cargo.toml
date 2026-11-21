@@ -10,6 +10,7 @@ members = [
     "crates/hotkeys",
     "crates/session",
     "crates/cli",
+    "crates/room-server",
     "crates/desktop",
     "crates/netprobe",
     "crates/web",
