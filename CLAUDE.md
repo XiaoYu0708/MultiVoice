@@ -103,6 +103,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
     -Exe "%USERPROFILE%\\.cargo\\target-multivoice\\release\\multivoice.exe" \
     -Out "<暫存區>\\shot.png" -WaitMs 6000 -Extra "--auto-join <票> --deafen"
   ```
+  加 `-Maximize` 會先把視窗最大化再截圖（檢查全螢幕排版：寬時房間分「頻道｜側欄」兩欄，網頁版 1024px 以上也是）。
   桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`、`--auto-update`（搭配 `MULTIVOICE_TEST_VERSION=0.0.1`，找到新版就直接更新）、
   `--restarted`（自己重新啟動自己時帶：等舊程式結束，不是叫醒它）。
   繪製：預設 OpenGL（glow），失敗時改用 wgpu（DX12）重新啟動並在 `%APPDATA%\MultiVoice\use-wgpu` 記住；`--renderer wgpu|glow` 指定、環境變數 `MULTIVOICE_TEST_GL_FAIL=1` 模擬 OpenGL 失敗。

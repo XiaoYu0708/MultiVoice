@@ -1,5 +1,5 @@
 # Launch MultiVoice desktop and screenshot its window via PrintWindow (works even if covered).
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File tools/shot.ps1 -Exe <multivoice.exe> -Out <png> [-WaitMs 6000] [-Extra "--auto-join <ticket> --deafen"] [-KeepRunning]
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File tools/shot.ps1 -Exe <multivoice.exe> -Out <png> [-WaitMs 6000] [-Extra "--auto-join <ticket> --deafen"] [-KeepRunning] [-Maximize]
 # Keep this file ASCII-only: Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI.
 param(
     [string]$Exe,
@@ -7,6 +7,7 @@ param(
     [string]$ProfileName = "ui-test",
     [int]$WaitMs = 3500,
     [switch]$KeepRunning,
+    [switch]$Maximize,
     [string]$Extra = ""
 )
 $ExtraArgs = @()
@@ -21,6 +22,7 @@ public static class W {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int s);
 }
@@ -34,6 +36,8 @@ while ((Get-Date) -lt $deadline) {
     if ($h -ne [IntPtr]::Zero) { break }
 }
 if ($h -eq [IntPtr]::Zero) { "window not found"; Stop-Process $p -Force; exit 1 }
+# SW_MAXIMIZE = 3 (check the layout on a full-screen window)
+if ($Maximize) { [W]::ShowWindow($h, 3) | Out-Null }
 Start-Sleep -Milliseconds $WaitMs
 [W]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 300

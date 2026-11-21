@@ -101,7 +101,7 @@
 
   <p id="mobile-note" class="hint" hidden>可以直接切到遊戲或鎖定螢幕，照樣說話和收聽。</p>
 
-  <section>
+  <section class="channels-col">
     <div class="section-head">
       <h2>頻道</h2>
       <span class="head-badges">
@@ -116,6 +116,8 @@
     </form>
   </section>
 
+  <!-- 側欄：手機上照順序排在頻道下面（操作列固定在畫面底部）；寬螢幕放在右邊一欄 -->
+  <aside class="side">
   <details class="panel settings">
     <summary><svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg><span>音訊設定</span><svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
     <label class="field">
@@ -163,6 +165,7 @@
       </div>
     </div>
   </section>
+  </aside>
 </main>
 
 <!-- 長按（手機）或右鍵（電腦）成員名字：調整聽這個人的音量 -->

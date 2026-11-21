@@ -139,6 +139,29 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
         .shadow(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: p.shadow })
 }
 
+/// 大廳（表單）最寬多少：全螢幕時輸入框和按鈕不要拉滿整個畫面
+pub const LOBBY_MAX_W: f32 = 560.0;
+/// 房間畫面最寬多少（兩欄時：頻道 + 側欄）
+pub const ROOM_MAX_W: f32 = 1240.0;
+/// 底部控制列的按鈕最寬多少（靜音、拒聽各約 300）
+pub const DOCK_MAX_W: f32 = 720.0;
+/// 房間畫面的側欄寬度（房間資訊、我、最近事件）
+pub const SIDE_W: f32 = 400.0;
+/// 可用寬度到這麼寬就把房間分成兩欄（頻道至少約 480 寬）
+pub const TWO_COLUMN_MIN_W: f32 = 900.0;
+
+/// 內容最寬 `max_w` 並水平置中（視窗放大或全螢幕時不要拉滿整個畫面）
+pub fn centered<R>(ui: &mut egui::Ui, max_w: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let avail = ui.available_rect_before_wrap();
+    let w = avail.width().min(max_w);
+    let rect = egui::Rect::from_min_size(egui::pos2(avail.center().x - w / 2.0, avail.top()), egui::vec2(w, avail.height()));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+        ui.set_width(w);
+        add(ui)
+    })
+    .inner
+}
+
 /// 房間畫面底部的控制列（靜音、拒聽、離開）：比背景亮一階、上方一條細線
 pub fn dock_frame(ui: &egui::Ui) -> egui::Frame {
     let p = pal(ui);

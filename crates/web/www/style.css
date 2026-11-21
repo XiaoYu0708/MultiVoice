@@ -553,6 +553,63 @@ button.icon-only { width: 44px; padding: 0; }
 
 .log { list-style: none; padding: 0 4px; margin: 0; font-size: 0.82rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
 
+/* ---------------------------------------------------------------- 寬螢幕（電腦全螢幕） */
+.side { display: flex; flex-direction: column; gap: 16px; }
+@media (min-width: 1024px) {
+  /* 房間分兩欄：左邊頻道、右邊側欄（麥克風與收聽、音訊設定、事件），內容最寬 1240；
+     頂部列橫跨整個畫面（分隔線不會斷在半空中），裡面的內容和下面對齊 */
+  .view.room {
+    --content: 1192px;
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(24px, 1fr) minmax(0, calc(var(--content) - 404px)) 24px 380px minmax(24px, 1fr);
+    align-items: start;
+    column-gap: 0; /* 欄間距由上面的 24px 欄負責 */
+    row-gap: 16px;
+    padding-left: 0;
+    padding-right: 0;
+    padding-bottom: 32px;
+  }
+  .view.room .topbar {
+    grid-column: 1 / -1;
+    margin-left: 0;
+    margin-right: 0;
+    padding-left: max(24px, calc((100% - var(--content)) / 2));
+    padding-right: max(24px, calc((100% - var(--content)) / 2));
+  }
+  #mobile-note { grid-column: 2 / 5; }
+  .channels-col { grid-column: 2; }
+  .side {
+    grid-column: 4;
+    position: sticky;
+    top: 84px;
+    max-height: calc(100dvh - 100px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    /* 留一點空間給卡片的陰影與焦點框，不要被捲動區域切掉 */
+    padding: 4px;
+    margin: -4px;
+  }
+  /* 操作列不再固定在畫面底部，變成側欄最上面的卡片 */
+  .dock {
+    position: static;
+    order: -1;
+    background: var(--panel);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 0 var(--hi), var(--shadow);
+  }
+  .dock-inner { padding: 16px; }
+  .log { max-height: 240px; overflow-y: auto; }
+  /* 成員音量改成畫面中間的對話框 */
+  .sheet-backdrop { align-items: center; }
+  .sheet { width: min(440px, 100% - 32px); border-radius: 20px; border-bottom: 1px solid var(--line); padding: 20px 22px; animation-name: fade-in; }
+  .grabber { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

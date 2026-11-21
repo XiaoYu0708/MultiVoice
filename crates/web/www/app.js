@@ -751,6 +751,8 @@ function renderToggles() {
 new ResizeObserver(([e]) => {
   document.documentElement.style.setProperty('--dock-h', `${e.target.offsetHeight}px`);
 }).observe($('.dock'));
+// 寬螢幕（電腦全螢幕）時音訊設定在右邊側欄，空間夠，預設展開
+if (matchMedia('(min-width: 1024px)').matches) $('.settings').open = true;
 $('#mute-btn').addEventListener('click', () => {
   // un-muting while deafened also un-deafens (same as desktop)
   if (muted || deafened) { muted = false; deafened = false; } else muted = true;

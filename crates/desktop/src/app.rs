@@ -604,7 +604,63 @@ impl App {
                 .collect();
             s.shared().set_user_gains(gains);
         }
-        // 房間資訊與邀請票
+        self.apply_audio_settings();
+
+        // 視窗夠寬（放大、全螢幕）：左邊頻道、右邊側欄（房間資訊、我、最近事件）；否則由上往下一欄
+        if ui.available_width() >= style::TWO_COLUMN_MIN_W {
+            ui.horizontal_top(|ui| {
+                let gap = 16.0;
+                let main_w = ui.available_width() - style::SIDE_W - gap;
+                ui.allocate_ui_with_layout(egui::vec2(main_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(main_w);
+                    self.room_channels(ui, snap);
+                });
+                ui.add_space(gap - ui.spacing().item_spacing.x);
+                ui.allocate_ui_with_layout(egui::vec2(style::SIDE_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(style::SIDE_W);
+                    self.room_info(ui, snap);
+                    ui.add_space(6.0);
+                    self.me_card(ui, snap);
+                    ui.add_space(4.0);
+                    self.recent_events(ui, snap);
+                });
+            });
+        } else {
+            self.room_info(ui, snap);
+            ui.add_space(6.0);
+            self.me_card(ui, snap);
+            ui.add_space(8.0);
+            self.room_channels(ui, snap);
+            self.recent_events(ui, snap);
+        }
+    }
+
+    /// 設定有變就套用（例如系統匣或其他地方改了設定）：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
+    fn apply_audio_settings(&mut self) {
+        let opts = self.settings.audio_opts();
+        if self.applied.as_ref() != Some(&opts) {
+            if let Some(s) = self.session.as_mut() {
+                self.error = s.apply_audio(&opts).err().map(|e| format!("{e:#}"));
+                // 失敗時 session 已退回原本的裝置；把畫面上的選擇也改回去，避免每一幀重試
+                if self.error.is_some() {
+                    self.settings.input_device = self.applied.as_ref().and_then(|o| o.input.clone());
+                    self.settings.output_device = self.applied.as_ref().and_then(|o| o.output.clone());
+                }
+            }
+            self.applied = Some(self.settings.audio_opts());
+        }
+    }
+
+    fn recent_events(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
+        egui::CollapsingHeader::new("最近事件").default_open(false).show(ui, |ui| {
+            for line in snap.log.iter().rev().take(10) {
+                ui.weak(line);
+            }
+        });
+    }
+
+    /// 房間資訊與邀請票
+    fn room_info(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         style::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -666,9 +722,10 @@ impl App {
                 });
             }
         });
+    }
 
-        ui.add_space(6.0);
-        // 自己：麥克風音量與目前送出的頻道
+    /// 自己：麥克風音量與目前送出的頻道
+    fn me_card(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         style::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -708,8 +765,10 @@ impl App {
                 ui.colored_label(GREEN, format!("目前送出：{}", snap.talking_to.join("、")));
             }
         });
+    }
 
-        ui.add_space(8.0);
+    /// 頻道：標題、設定檔列、頻道卡片、新增頻道
+    fn room_channels(&mut self, ui: &mut egui::Ui, snap: &Snapshot) {
         ui.horizontal(|ui| {
             style::section_title(ui, "頻道");
             style::badge(ui, format!("{} 個", snap.channels.len()), style::accent_text(ui));
@@ -733,29 +792,9 @@ impl App {
                 self.new_channel.clear();
             }
         });
-
-        // 設定有變就套用（例如系統匣或其他地方改了設定）：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
-        let opts = self.settings.audio_opts();
-        if self.applied.as_ref() != Some(&opts) {
-            if let Some(s) = self.session.as_mut() {
-                self.error = s.apply_audio(&opts).err().map(|e| format!("{e:#}"));
-                // 失敗時 session 已退回原本的裝置；把畫面上的選擇也改回去，避免每一幀重試
-                if self.error.is_some() {
-                    self.settings.input_device = self.applied.as_ref().and_then(|o| o.input.clone());
-                    self.settings.output_device = self.applied.as_ref().and_then(|o| o.output.clone());
-                }
-            }
-            self.applied = Some(self.settings.audio_opts());
-        }
         if let Some(e) = &self.error {
             ui.colored_label(RED, e);
         }
-
-        egui::CollapsingHeader::new("最近事件").default_open(false).show(ui, |ui| {
-            for line in snap.log.iter().rev().take(10) {
-                ui.weak(line);
-            }
-        });
     }
 
     /// 一個頻道：名稱（右鍵改名／刪除）、加入／離開、我的說話與收聽設定、頻道成員
@@ -1423,7 +1462,7 @@ impl eframe::App for App {
         if let Some(snap) = snap.as_ref().filter(|_| gone.is_none()) {
             egui::Panel::bottom("controls")
                 .frame(style::dock_frame(ui))
-                .show(ui, |ui| self.controls(ui, snap));
+                .show(ui, |ui| style::centered(ui, style::DOCK_MAX_W, |ui| self.controls(ui, snap)));
         }
         if let Some(rx) = &self.update_rx
             && let Ok(r) = rx.try_recv()
@@ -1432,29 +1471,40 @@ impl eframe::App for App {
             self.update_rx = None;
         }
         self.mic_test_shown = false;
+        // 全螢幕時內容不拉滿：大廳像表單一樣窄，房間最寬 ROOM_MAX_W（寬時分兩欄）
+        let max_w = if snap.is_some() && gone.is_none() { style::ROOM_MAX_W } else { style::LOBBY_MAX_W };
         egui::CentralPanel::default().show(ui, |ui| {
-            self.update_banner(ui, snap.as_ref());
-            ui.horizontal(|ui| {
-                style::brand(ui);
-                if let Some(s) = &self.session {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let name = s.input_name();
-                        if name.is_empty() {
-                            ui.colored_label(AMBER, "沒有麥克風（只能聽）");
-                        } else {
-                            ui.weak(format!("麥克風：{}", short(&name)));
-                        }
-                    });
+            let gone_now = style::centered(ui, max_w, |ui| {
+                self.update_banner(ui, snap.as_ref());
+                ui.horizontal(|ui| {
+                    style::brand(ui);
+                    if let Some(s) = &self.session {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let name = s.input_name();
+                            if name.is_empty() {
+                                ui.colored_label(AMBER, "沒有麥克風（只能聽）");
+                            } else {
+                                ui.weak(format!("麥克風：{}", short(&name)));
+                            }
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+                if let Some(why) = &gone {
+                    self.gone(ui, why);
+                    return true;
                 }
+                false
             });
-            ui.add_space(4.0);
-            if let Some(why) = &gone {
-                self.gone(ui, why);
+            if gone_now {
                 return;
             }
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match &snap {
-                Some(snap) => self.room(ui, snap),
-                None => self.lobby(ui),
+            // 捲動軸在視窗右邊，內容置中
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                style::centered(ui, max_w, |ui| match &snap {
+                    Some(snap) => self.room(ui, snap),
+                    None => self.lobby(ui),
+                })
             });
         });
 
