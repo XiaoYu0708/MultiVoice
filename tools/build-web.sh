@@ -45,7 +45,8 @@ ls -la "$OUT" "$OUT/pkg"
 case "${1:-}" in
   --deploy)
     mkdir -p deploy/web
-    find deploy/web -mindepth 1 ! -name .gitkeep -delete
+    # media/（Play 商店示範影片等，不在 git 裡）保留
+    find deploy/web -mindepth 1 ! -name .gitkeep ! -path 'deploy/web/media' ! -path 'deploy/web/media/*' -delete
     cp -r "$OUT"/. deploy/web/
     echo "已複製到 deploy/web/"
     ;;
