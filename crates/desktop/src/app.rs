@@ -474,7 +474,7 @@ impl App {
             ui.set_width(ui.available_width());
             egui::CollapsingHeader::new(RichText::new("音訊設定").strong())
                 .default_open(false)
-                .show(ui, |ui| self.audio_settings(ui));
+                .show(ui, |ui| self.audio_settings(ui, false));
         });
         ui.add_space(6.0);
         if self.profile != "default" {
@@ -483,7 +483,11 @@ impl App {
         ui.weak(format!("版本 {}", update::current()));
     }
 
-    fn audio_settings(&mut self, ui: &mut egui::Ui) {
+    /// 音訊設定（大廳與房間共用，和網頁版的「音訊設定」對應）。`in_room`：房間裡不放麥克風測試
+    /// （房間已經在用麥克風，上面「我」的音量條就看得到；測試要另外開一次麥克風）
+    fn audio_settings(&mut self, ui: &mut egui::Ui, in_room: bool) {
+        // 滑桿跟著卡片寬度延長（右邊留給數值框與文字），不要只有預設的 100
+        ui.spacing_mut().slider_width = (ui.available_width() - 190.0).clamp(100.0, 260.0);
         let device_combo = |ui: &mut egui::Ui, label: &str, list: &[String], value: &mut Option<String>| {
             ui.label(label);
             egui::ComboBox::from_id_salt(label)
@@ -502,7 +506,13 @@ impl App {
             self.inputs = audio::device::list_devices(true);
             self.outputs = audio::device::list_devices(false);
         }
-
+        ui.add_space(6.0);
+        ui.add(
+            egui::Slider::new(&mut self.settings.output_volume, 0.0..=2.0)
+                .step_by(0.05)
+                .text("輸出音量")
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        );
 
         ui.add_space(6.0);
         style::toggle(ui, &mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
@@ -528,8 +538,10 @@ impl App {
         ui.weak("「偵測說話」模式下，聲音比門檻大才送出。背景吵時調高、講話常被切掉時調低");
         style::toggle(ui, &mut self.settings.agc, "自動音量（講話太小聲時自動放大、太大聲時壓低）");
 
-        ui.add_space(6.0);
-        self.mic_test_ui(ui);
+        if !in_room {
+            ui.add_space(6.0);
+            self.mic_test_ui(ui);
+        }
 
         ui.add_space(8.0);
         ui.label(RichText::new("按鍵說話").strong());
@@ -537,6 +549,8 @@ impl App {
         style::toggle(ui, &mut self.settings.cues, "開／關麥提示音");
         if self.settings.cues {
             ui.horizontal(|ui| {
+                // 這一列多一顆「試聽」：滑桿短一點，才不會把卡片撐寬
+                ui.spacing_mut().slider_width = (ui.spacing().slider_width - 56.0).max(80.0);
                 let r = ui
                     .add(
                         egui::Slider::new(&mut self.settings.cue_volume, 0.0..=session::talk::MAX_CUE_VOLUME)
@@ -561,7 +575,11 @@ impl App {
             ui.colored_label(RED, format!("按鍵說話無法使用：{e}"));
         } else if !hotkeys::is_admin() {
             ui.weak("如果遊戲以系統管理員身分執行，這裡也要以管理員身分執行，否則遊戲在前景時收不到按鍵");
-            if ui.small_button("以系統管理員身分重新啟動").clicked() && hotkeys::relaunch_as_admin(&[crate::instance::RESTARTED]) {
+            // 房間裡不放這顆：重新啟動會離開房間
+            if !in_room
+                && ui.small_button("以系統管理員身分重新啟動").clicked()
+                && hotkeys::relaunch_as_admin(&[crate::instance::RESTARTED])
+            {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
@@ -621,6 +639,8 @@ impl App {
                     self.room_info(ui, snap);
                     ui.add_space(6.0);
                     self.me_card(ui, snap);
+                    ui.add_space(6.0);
+                    self.room_audio_card(ui, true);
                     ui.add_space(4.0);
                     self.recent_events(ui, snap);
                 });
@@ -631,8 +651,21 @@ impl App {
             self.me_card(ui, snap);
             ui.add_space(8.0);
             self.room_channels(ui, snap);
+            ui.add_space(6.0);
+            self.room_audio_card(ui, false);
             self.recent_events(ui, snap);
         }
+    }
+
+    /// 房間裡的音訊設定（和網頁版一致）：寬視窗在側欄、預設展開；窄視窗在頻道下面、預設收起
+    fn room_audio_card(&mut self, ui: &mut egui::Ui, wide: bool) {
+        style::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::CollapsingHeader::new(RichText::new("音訊設定").strong())
+                .id_salt(if wide { "room-audio-wide" } else { "room-audio" })
+                .default_open(wide)
+                .show(ui, |ui| self.audio_settings(ui, true));
+        });
     }
 
     /// 設定有變就套用（例如系統匣或其他地方改了設定）：降噪、音量立即生效；換裝置會重啟音訊（不中斷連線）
