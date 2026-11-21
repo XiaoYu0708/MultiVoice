@@ -71,7 +71,8 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   - 網頁版：`tools/release.sh` 最後會重新編譯並部署
   - Android 版：另一個專案 `C:\Users\XiaoYu\Projects\App開發\MultiVoice-Android`（原生 Kotlin，透過 JNI 用這裡的 Rust crates，建置方式見該專案的 `CLAUDE.md`；
     GitHub `XiaoYu0708/MultiVoice-Android` 是**私人**儲存庫，裡面有簽章金鑰，不能改成公開）。
-    `versionName` 改成同一個版本號、`versionCode` 加 1，重新編譯簽好的 AAB／APK
+    `versionName` 改成同一個版本號、`versionCode` 加 1，重新編譯簽好的 AAB／APK，
+    **APK 要一起附到這個儲存庫的 GitHub Release**（和 exe 放在同一個 Release；「下載哪個檔案」說明也要列出 APK）
   - 改了協定或共用 crates（`client-core`、`mixer-core`、`transport`、`protocol`）時，三個版本都要重新編譯並測試互通
 - **每次發佈的說明都要附上「下載哪個檔案」**：`MultiVoice-Setup.exe`（安裝版）、`multivoice.exe`（免安裝版，一鍵更新也是下載它）、`multivoice-cli.exe`（命令列版，一般人不用）各自的用途。
   `tools/release.sh` 會自動把這段加在更新說明後面；不用腳本、手動發佈時也要加
