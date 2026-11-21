@@ -58,6 +58,26 @@ pub fn acquire(profile: &str, wait: bool) -> Option<Guard> {
     }
 }
 
+/// 這個設定檔已經有一個在跑（找得到它的系統匣視窗）就叫回它、回傳 true；不等待。
+/// 一般權限時用（以管理員執行的那一個建的 mutex，一般權限打不開，只能找視窗）
+pub fn show_running(profile: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+        let (class, title) = (wide(crate::tray::CLASS), wide(&crate::tray::window_name(profile)));
+        if unsafe { FindWindowW(class.as_ptr(), title.as_ptr()) }.is_null() {
+            return false;
+        }
+        show_existing(profile);
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = profile;
+        false
+    }
+}
+
 /// 叫回已經在執行的那一個（它可能剛啟動、系統匣還沒建好：找不到就再等一下）
 #[cfg(windows)]
 fn show_existing(profile: &str) {

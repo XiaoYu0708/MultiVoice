@@ -28,6 +28,8 @@ public static class W {
 }
 "@
 [W]::SetProcessDPIAware() | Out-Null
+# The desktop app relaunches itself as admin (UAC prompt) unless this is set
+$env:MULTIVOICE_TEST_NO_ADMIN = "1"
 $p = Start-Process -FilePath $Exe -ArgumentList (@("--profile", $ProfileName) + $ExtraArgs) -PassThru
 $deadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $deadline) {

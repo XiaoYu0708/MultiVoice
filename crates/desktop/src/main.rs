@@ -11,6 +11,8 @@ mod style;
 mod tray;
 mod update;
 
+use session::hotkeys;
+
 const TITLE: &str = "MultiVoice";
 
 fn main() {
@@ -23,9 +25,22 @@ fn main() {
             .init();
     }
     crash::install_panic_hook();
-    // 同一個設定檔已經在執行：叫回它的視窗，不開新的
     let args: Vec<String> = std::env::args().collect();
     let profile = args.iter().position(|a| a == "--profile").and_then(|i| args.get(i + 1)).cloned().unwrap_or("default".into());
+    // 一律以系統管理員身分執行：遊戲以管理員執行時，一般權限的程式在遊戲前景時收不到按鍵（按鍵說話會失效）。
+    // 不是管理員就跳 UAC 以管理員重新啟動自己（參數原樣帶過去），自己直接結束；使用者在 UAC 按「否」就不開。
+    // 已經有一個在跑（系統匣視窗找得到）就直接叫回它，不必再問 UAC。
+    // 測試：環境變數 MULTIVOICE_TEST_NO_ADMIN=1 不要求管理員（自動化測試從一般權限啟動，不想每次都跳 UAC）
+    if cfg!(windows) && !hotkeys::is_admin() && std::env::var_os("MULTIVOICE_TEST_NO_ADMIN").is_none() {
+        if !args.iter().any(|a| a == instance::RESTARTED) && instance::show_running(&profile) {
+            return;
+        }
+        if !hotkeys::relaunch_as_admin(&[]) {
+            crash::log("沒有取得系統管理員權限（UAC 被拒絕），不開啟程式");
+        }
+        return;
+    }
+    // 同一個設定檔已經在執行：叫回它的視窗，不開新的
     let Some(_instance) = instance::acquire(&profile, args.iter().any(|a| a == instance::RESTARTED)) else {
         return;
     };
