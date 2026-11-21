@@ -486,10 +486,10 @@ impl App {
     /// 音訊設定（大廳與房間共用，和網頁版的「音訊設定」對應）。`in_room`：房間裡不放麥克風測試
     /// （房間已經在用麥克風，上面「我」的音量條就看得到；測試要另外開一次麥克風）
     fn audio_settings(&mut self, ui: &mut egui::Ui, in_room: bool) {
-        // 滑桿跟著卡片寬度延長（右邊留給數值框與文字），不要只有預設的 100
-        ui.spacing_mut().slider_width = (ui.available_width() - 190.0).clamp(100.0, 260.0);
+        // 分組：裝置、麥克風處理、按鍵說話與提示音、其他（項目多，分組比較好找）
+        group_title(ui, "裝置", false);
         let device_combo = |ui: &mut egui::Ui, label: &str, list: &[String], value: &mut Option<String>| {
-            ui.label(label);
+            let l = ui.label(label);
             egui::ComboBox::from_id_salt(label)
                 .width(ui.available_width())
                 .selected_text(value.clone().unwrap_or_else(|| "系統預設".into()))
@@ -498,7 +498,9 @@ impl App {
                     for d in list {
                         ui.selectable_value(value, Some(d.clone()), d);
                     }
-                });
+                })
+                .response
+                .labelled_by(l.id);
         };
         device_combo(ui, "麥克風", &self.inputs, &mut self.settings.input_device);
         device_combo(ui, "耳機／喇叭", &self.outputs, &mut self.settings.output_device);
@@ -506,36 +508,47 @@ impl App {
             self.inputs = audio::device::list_devices(true);
             self.outputs = audio::device::list_devices(false);
         }
-        ui.add_space(6.0);
-        ui.add(
-            egui::Slider::new(&mut self.settings.output_volume, 0.0..=2.0)
-                .step_by(0.05)
-                .text("輸出音量")
-                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        ui.add_space(4.0);
+        labeled_slider(
+            ui,
+            "輸出音量",
+            egui::Slider::new(&mut self.settings.output_volume, 0.0..=2.0).step_by(0.05).custom_formatter(percent),
         );
 
-        ui.add_space(6.0);
+        group_title(ui, "麥克風處理", true);
         style::toggle(ui, &mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
         if self.settings.denoise {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut self.settings.strong_denoise, false, "標準");
-                ui.radio_value(&mut self.settings.strong_denoise, true, "強力（DeepFilterNet）")
-                    .on_hover_text("背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。可以在下面的麥克風測試開「聽自己的聲音」比較");
+                let hint = if in_room {
+                    "背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲"
+                } else {
+                    "背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。可以在下面的麥克風測試開「聽自己的聲音」比較"
+                };
+                ui.radio_value(&mut self.settings.strong_denoise, true, "強力（DeepFilterNet）").on_hover_text(hint);
             });
             if !self.settings.strong_denoise {
-                ui.add(egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).text("小聲講話保留"));
+                labeled_slider(
+                    ui,
+                    "小聲講話保留",
+                    egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).step_by(0.05).custom_formatter(percent),
+                );
                 ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
             }
         }
-
-        ui.add_space(6.0);
-        ui.add(
+        ui.add_space(4.0);
+        labeled_slider(
+            ui,
+            "說話偵測門檻",
             egui::Slider::new(&mut self.settings.gate_dbfs, -70.0..=-20.0)
                 .step_by(1.0)
-                .text("說話偵測門檻")
                 .custom_formatter(|v, _| format!("{v:.0} dB")),
         );
-        ui.weak("「偵測說話」模式下，聲音比門檻大才送出。背景吵時調高、講話常被切掉時調低");
+        ui.weak(if in_room {
+            "「偵測說話」模式下，聲音比門檻大才送出（上面音量條的黃線）。背景吵時調高、講話常被切掉時調低"
+        } else {
+            "「偵測說話」模式下，聲音比門檻大才送出。背景吵時調高、講話常被切掉時調低"
+        });
         style::toggle(ui, &mut self.settings.agc, "自動音量（講話太小聲時自動放大、太大聲時壓低）");
 
         if !in_room {
@@ -543,29 +556,32 @@ impl App {
             self.mic_test_ui(ui);
         }
 
-        ui.add_space(8.0);
-        ui.label(RichText::new("按鍵說話").strong());
-        ui.weak("進房後在頻道的「說話」選「按鍵說話」設定按鍵；遊戲在前景時也有效");
+        group_title(ui, "按鍵說話與提示音", true);
+        ui.weak("在頻道的「說話」選「按鍵說話」設定按鍵；遊戲在前景時也有效");
         style::toggle(ui, &mut self.settings.cues, "開／關麥提示音");
         if self.settings.cues {
-            ui.horizontal(|ui| {
-                // 這一列多一顆「試聽」：滑桿短一點，才不會把卡片撐寬
-                ui.spacing_mut().slider_width = (ui.spacing().slider_width - 56.0).max(80.0);
-                let r = ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.cue_volume, 0.0..=session::talk::MAX_CUE_VOLUME)
-                            .step_by(0.05)
-                            .text("提示音音量")
-                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                    )
-                    .on_hover_text("放開滑桿會試聽一次；提示音也跟著輸出音量");
-                // 拖完放開或用鍵盤調整時試聽
-                let released = r.drag_stopped() || (r.changed() && !r.dragged());
-                if released || ui.small_button("試聽").clicked() {
-                    self.preview_cue();
-                }
+            // 名稱與「試聽」在上面、滑桿在下面（和網頁版一樣）
+            let mut preview = false;
+            let l = ui.horizontal(|ui| {
+                let l = ui.label("提示音音量");
+                preview = ui.small_button("試聽").clicked();
+                l
             });
+            let r = slider_full(
+                ui,
+                egui::Slider::new(&mut self.settings.cue_volume, 0.0..=session::talk::MAX_CUE_VOLUME)
+                    .step_by(0.05)
+                    .custom_formatter(percent),
+            )
+            .labelled_by(l.inner.id)
+            .on_hover_text("放開滑桿會試聽一次；提示音也跟著輸出音量");
+            // 拖完放開或用鍵盤調整時試聽
+            if preview || r.drag_stopped() || (r.changed() && !r.dragged()) {
+                self.preview_cue();
+            }
         }
+
+        group_title(ui, "其他", true);
         if self.tray.is_some() {
             style::toggle(ui, &mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
         }
@@ -789,7 +805,10 @@ impl App {
             // 麥克風關閉（靜音／拒聽）或沒有麥克風時音量條不動
             let mic_off = snap.muted || !snap.has_mic;
             let frac = if mic_off { 0.0 } else { ((db + 60.0) / 60.0).clamp(0.0, 1.0) };
-            style::meter(ui, frac, snap.tx_active && !mic_off, mic_off, 8.0, &[]);
+            // 黃線：說話偵測門檻（和網頁版的音量條一樣），調門檻時看得到效果
+            let gate = ((self.settings.gate_dbfs + 60.0) / 60.0).clamp(0.0, 1.0);
+            let marks = if snap.has_mic { vec![(gate, AMBER)] } else { vec![] };
+            style::meter(ui, frac, snap.tx_active && !mic_off, mic_off, 8.0, &marks);
             if !snap.has_mic {
                 ui.weak("插上麥克風後會自動開啟，不用重新進房");
             } else if snap.talking_to.is_empty() {
@@ -1563,6 +1582,35 @@ enum Confirm {
     Transfer(u16, String),
     /// 更換邀請
     Rotate,
+}
+
+/// 音訊設定裡的分組標題；`gap`：和上一組之間留空並畫一條細線
+fn group_title(ui: &mut egui::Ui, text: &str, gap: bool) {
+    if gap {
+        ui.add_space(6.0);
+        ui.separator();
+    }
+    ui.label(RichText::new(text).strong().color(style::accent_text(ui)));
+}
+
+/// 滑桿數值顯示成百分比（1.0 = 100%）
+fn percent(v: f64, _: std::ops::RangeInclusive<usize>) -> String {
+    format!("{:.0}%", v * 100.0)
+}
+
+/// 滑桿佔滿一整列（右邊留給數值框）
+fn slider_full(ui: &mut egui::Ui, slider: egui::Slider) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = (ui.available_width() - 84.0).max(80.0);
+        ui.add(slider)
+    })
+    .inner
+}
+
+/// 名稱在上、滑桿在下（和網頁版一樣：先看到是什麼，再看到數值）
+fn labeled_slider(ui: &mut egui::Ui, label: &str, slider: egui::Slider) -> egui::Response {
+    let l = ui.label(label);
+    slider_full(ui, slider).labelled_by(l.id)
 }
 
 /// 裝置名稱很長（例如「Microphone (Razer Seiren V3 Mini) [Microphone]」），只取括號內的型號
