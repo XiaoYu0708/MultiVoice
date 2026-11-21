@@ -11,8 +11,15 @@ multivoice.xiaoyu0708.ip-ddns.com {
 }
 
 gvg.xiaoyu0708.ip-ddns.com {
-	# 百業戰語音機器人（另一個 docker compose 專案，埠 8766 發佈在本機）
-	reverse_proxy host.docker.internal:8766
+	# 百業戰首領偵測 exe 的兩個機器人（另一個 docker compose 專案，埠都發佈在本機），路徑相同，用前綴分開：
+	# - /discord/*：Discord 版（Python，埠 8765），去掉 /discord 前綴再轉（例如 /discord/boss-alert → /boss-alert）
+	# - 其他：百業戰語音機器人（MultiVoice 版 gvg_voice，埠 8766）
+	handle_path /discord/* {
+		reverse_proxy host.docker.internal:8765
+	}
+	handle {
+		reverse_proxy host.docker.internal:8766
+	}
 }
 
 modhelmx.xiaoyu0708.ip-ddns.com {
