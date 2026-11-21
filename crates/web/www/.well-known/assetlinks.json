@@ -5,7 +5,8 @@
       "namespace": "android_app",
       "package_name": "com.xiaoyu.multivoice",
       "sha256_cert_fingerprints": [
-        "48:BE:75:5A:78:BC:14:29:2C:57:2E:46:74:4E:C0:BC:02:10:D4:1A:0D:19:A9:90:B6:F6:73:88:BA:68:60:56"
+        "48:BE:75:5A:78:BC:14:29:2C:57:2E:46:74:4E:C0:BC:02:10:D4:1A:0D:19:A9:90:B6:F6:73:88:BA:68:60:56",
+        "BF:64:A1:88:D7:ED:96:15:38:30:7E:F6:CF:3C:47:32:A6:26:19:C3:CE:88:F3:A3:04:0B:55:0E:94:F9:8E:CF"
       ]
     }
   }
