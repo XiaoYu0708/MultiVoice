@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.xiaoyu.multivoice",
+      "sha256_cert_fingerprints": [
+        "48:BE:75:5A:78:BC:14:29:2C:57:2E:46:74:4E:C0:BC:02:10:D4:1A:0D:19:A9:90:B6:F6:73:88:BA:68:60:56"
+      ]
+    }
+  }
+]

@@ -34,7 +34,8 @@ mkdir -p "$OUT/pkg"
 wasm-bindgen "$WASM/web.wasm" --target web --out-dir "$OUT/pkg" --no-typescript --remove-name-section --remove-producers-section
 cp "$WASM/web_audio.wasm" "$OUT/"
 cp "$TARGET/web-dfn/wasm32-unknown-unknown/release/web_dfn.wasm" "$OUT/"
-cp crates/web/www/* "$OUT/"
+# 用 -r 與 /. 連 .well-known（Android App Links 的 assetlinks.json）一起複製
+cp -r crates/web/www/. "$OUT/"
 # 每次建置換掉 service worker 的快取名稱
 VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
 sed -i "s/multivoice-v1/multivoice-$VERSION-$(date +%s)/" "$OUT/sw.js"
