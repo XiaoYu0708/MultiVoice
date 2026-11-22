@@ -618,14 +618,6 @@ impl App {
             };
         });
         self.confirm_modal(ui);
-        // 房主把頻道裡的成員拖到頻道以外的地方放開：移出那個頻道（放在頻道卡片上的已經被卡片拿走）
-        if snap.is_owner
-            && ui.input(|i| i.pointer.any_released())
-            && let Some(p) = egui::DragAndDrop::take_payload::<DragMember>(ui.ctx())
-            && let (Some(from), Some(s)) = (p.from, &self.session)
-        {
-            s.move_member(p.idx, from, false);
-        }
         // 我聽各成員的音量（依名稱存，套到目前的成員編號）
         if let Some(s) = &self.session {
             let gains = snap
@@ -671,6 +663,15 @@ impl App {
             ui.add_space(6.0);
             self.room_audio_card(ui, false);
             self.recent_events(ui, snap);
+        }
+        // 房主把頻道裡的成員拖到頻道以外的地方放開：移出那個頻道。
+        // 一定要在畫完頻道卡片之後：放在卡片上的已經被卡片拿走，剩下的才是放在外面的
+        if snap.is_owner
+            && ui.input(|i| i.pointer.any_released())
+            && let Some(p) = egui::DragAndDrop::take_payload::<DragMember>(ui.ctx())
+            && let (Some(from), Some(s)) = (p.from, &self.session)
+        {
+            s.move_member(p.idx, from, false);
         }
     }
 
@@ -1425,7 +1426,9 @@ impl App {
                 });
             }
         });
-        if dragging && card.response.contains_pointer() {
+        // 用 container_contains_pointer：放在卡片裡的文字、按鈕上也算（contains_pointer 被子元件蓋住時是 false）
+        let over = card.response.container_contains_pointer();
+        if dragging && over {
             ui.painter().rect_stroke(
                 card.response.rect.expand(2.0),
                 12.0,
@@ -1433,7 +1436,11 @@ impl App {
                 egui::StrokeKind::Outside,
             );
         }
-        if is_owner && let Some(p) = card.response.dnd_release_payload::<DragMember>() {
+        if dragging
+            && over
+            && ui.input(|i| i.pointer.any_released())
+            && let Some(p) = egui::DragAndDrop::take_payload::<DragMember>(ui.ctx())
+        {
             drop_member(self.session.as_ref(), &p, ch);
         }
         if let Some(t) = record {
