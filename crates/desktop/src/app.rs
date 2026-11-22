@@ -1273,14 +1273,26 @@ impl App {
                                 }
                             } else {
                                 let gain = volumes.get(&m.name).copied().unwrap_or(1.0);
+                                let hover = match m.loss {
+                                    Some(l) => format!(
+                                        "右鍵：調整聽這個人的音量\n遺失 {:.1}%：最近 5 秒聽他說話時需要補償（FEC／PLC）的比例，持續超過 5% 會斷斷續續、聲音變悶",
+                                        l * 100.0
+                                    ),
+                                    None => "右鍵：調整聽這個人的音量".into(),
+                                };
                                 let r = ui
                                     .add(egui::Label::new(&m.name).sense(egui::Sense::click()))
-                                    .on_hover_text("右鍵：調整聽這個人的音量");
+                                    .on_hover_text(hover);
                                 if m.is_owner {
                                     style::owner_icon(ui);
                                 }
                                 if gain != 1.0 {
                                     ui.colored_label(if gain == 0.0 { RED } else { AMBER }, pct(gain));
+                                }
+                                // 聽他說話的遺失率偏高時直接標出來（分辨是不是他的網路問題）
+                                if let Some(l) = m.loss.filter(|&l| l >= 0.02) {
+                                    ui.colored_label(if l >= 0.05 { RED } else { AMBER }, format!("遺失 {:.0}%", l * 100.0))
+                                        .on_hover_text("聽他說話時封包遺失的比例（最近 5 秒）");
                                 }
                                 r.context_menu(|ui| {
                                     ui.label(RichText::new(format!("{} 的音量", m.name)).strong());

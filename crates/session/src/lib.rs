@@ -129,6 +129,8 @@ pub struct ChannelMemberView {
     pub talk: bool,
     /// 正在這個頻道說話
     pub speaking: bool,
+    /// 最近約 5 秒聽他說話時需要補償（FEC／PLC）的比例；我自己或最近沒說話時 None
+    pub loss: Option<f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +200,8 @@ struct RoomState {
     notice: Option<(String, bool, std::time::Instant)>,
     /// 我剛要求移出的成員：他離開時提示「已移出」
     kicking: Option<SessionIdx>,
+    /// 上次看到的連線路徑是不是 relay（路徑改變時記一筆，查斷斷續續用）
+    last_relay: Option<bool>,
 }
 
 impl RoomState {
@@ -236,6 +240,11 @@ struct Meter {
     /// (時間, 正常解碼, 補償, 房主送出位元組)
     samples: VecDeque<(std::time::Instant, u64, u64, u64)>,
 }
+
+/// 連續走 relay 多久就重新連線（剛連上時打洞通常幾秒內就成功）
+const PATH_STUCK: Duration = Duration::from_secs(20);
+/// 一直沒變回直連時最多自動重連幾次
+const PATH_MAX_TRIES: u32 = 3;
 
 impl Meter {
     const WINDOW: Duration = Duration::from_secs(5);
@@ -277,6 +286,8 @@ pub struct Session {
     takeover: Arc<takeover::Takeover>,
     /// 遺失率、房主上傳量
     meter: Mutex<Meter>,
+    /// 每位說話者各自的遺失率
+    member_meters: Mutex<HashMap<SessionIdx, Meter>>,
     /// UI 執行緒不在 tokio 裡：需要開 task 時先 enter
     rt: tokio::runtime::Handle,
     name: String,
@@ -436,6 +447,7 @@ impl Session {
             endpoints: c.endpoints,
             takeover,
             meter: Mutex::new(Meter::default()),
+            member_meters: Mutex::default(),
             rt: rt.clone(),
             name: c.name,
             room,
@@ -443,7 +455,48 @@ impl Session {
         };
         // 自動加入大廳
         s.set_channel(DEFAULT_CHANNEL, Some(s.default_channel_cfg()))?;
+        s.spawn_path_watch();
         Ok(s)
+    }
+
+    /// 每秒看一次到轉發者的連線路徑：
+    /// - 走 relay 時 jitter buffer 改用寬鬆模式（relay 是 TCP，掉包時會整批卡住）
+    /// - 卡在 relay 太久就對轉發者重新連線一次（等於自動「關掉重開」，重新打洞）；
+    ///   沒成功就拉長間隔再試，連續失敗 [`PATH_MAX_TRIES`] 次（可能是打不了洞的網路）就不再試，直到又直連過
+    fn spawn_path_watch(&self) {
+        let (client, takeover, shared, room) =
+            (self.client.clone(), self.takeover.clone(), self.shared.clone(), self.room.clone());
+        self.rt.spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            let mut relay_since: Option<std::time::Instant> = None;
+            let mut wait = PATH_STUCK;
+            let mut tries = 0u32;
+            while !shared.stop.load(Ordering::Relaxed) {
+                tick.tick().await;
+                // 我自己是轉發者：連的是本機，沒有路徑問題
+                let relay = takeover.host().is_none() && matches!(client.path(), Some((true, _)));
+                shared.on_relay.store(relay, Ordering::Relaxed);
+                if !relay {
+                    (relay_since, wait, tries) = (None, PATH_STUCK, 0);
+                    continue;
+                }
+                let since = *relay_since.get_or_insert_with(std::time::Instant::now);
+                if tries >= PATH_MAX_TRIES || takeover.recovering() || since.elapsed() < wait {
+                    continue;
+                }
+                tries += 1;
+                room.lock().unwrap().push_log("連線卡在 relay，重新連線嘗試直連…".into());
+                if let Err(e) = client.refresh_link().await {
+                    tracing::warn!("重新連線失敗：{e:#}");
+                }
+                // 給新連線時間打洞；還是 relay 就等更久再試
+                relay_since = Some(std::time::Instant::now());
+                wait = (wait * 2).min(Duration::from_secs(300));
+                if tries == PATH_MAX_TRIES {
+                    tracing::info!("重試 {tries} 次仍走 relay，不再自動重連");
+                }
+            }
+        });
     }
 
     /// 加入頻道時的預設設定：收聽 + 依「開麥預設」偵測說話或常開
@@ -523,6 +576,18 @@ impl Session {
         let mut members = members;
         members.sort_by_key(|m| m.idx);
 
+        let member_loss: HashMap<SessionIdx, f32> = {
+            let mut mm = self.member_meters.lock().unwrap();
+            let per = self.shared.jitter_per_sender();
+            mm.retain(|i, _| per.iter().any(|(j, _)| j == i));
+            per.iter()
+                .filter_map(|(i, st)| {
+                    let m = mm.entry(*i).or_default();
+                    m.sample(st.decoded, st.fec + st.plc, 0);
+                    m.rates().0.map(|l| (*i, l))
+                })
+                .collect()
+        };
         let cfgs = self.shared.channel_cfgs();
         let subs = self.client.subscriptions();
         let owner_idx = self.owner_idx();
@@ -550,6 +615,7 @@ impl Session {
                             listen: s.listen,
                             talk: s.talk,
                             speaking,
+                            loss: if is_me { None } else { member_loss.get(&s.session_idx).copied() },
                         }
                     })
                     .collect();
@@ -578,7 +644,18 @@ impl Session {
             Some(o) => self.client.members().into_iter().find(|m| m.node_id == o).map(|m| m.display_name),
             None => None,
         };
-        let r = self.room.lock().unwrap();
+        let path = self.client.path();
+        let mut r = self.room.lock().unwrap();
+        if let Some((relay, rtt)) = path {
+            if r.last_relay.is_some_and(|prev| prev != relay) {
+                r.push_log(if relay {
+                    format!("連線改走 relay（{rtt:.0} ms），聲音可能變差")
+                } else {
+                    format!("連線改為直連（{rtt:.0} ms）")
+                });
+            }
+            r.last_relay = Some(relay);
+        }
         Snapshot {
             me: MemberView { idx: my_idx, name: self.name.clone(), speaking: tx_active },
             members,
@@ -595,7 +672,7 @@ impl Session {
             has_mic: self.shared.has_mic.load(Ordering::Relaxed),
             mic_peak,
             mic_vad,
-            path: self.client.path(),
+            path,
             ping: r.ping,
             loss,
             host_load,

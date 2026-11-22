@@ -346,6 +346,28 @@ impl Client {
         Ok(())
     }
 
+    /// 對目前的轉發者重新連線一次（連線卡在 relay 時用：重新探測對外位址、重新打洞）。
+    /// 轉發者會用新連線取代舊的，我的槽位與訂閱照舊；成功時一樣發出 [`ClientEvent::Reconnected`]
+    pub async fn refresh_link(&self) -> Result<()> {
+        let inner = &self.inner;
+        let (addr, old) = {
+            let l = inner.link.lock().unwrap();
+            (l.host.clone(), l.conn.clone())
+        };
+        inner.ep.network_change().await;
+        // 轉發者收到新連線就會立刻關掉舊的，那時連線代數還沒換：先標記，舊連線結束不算失聯
+        inner.migrating.store(true, Ordering::SeqCst);
+        let r = self.reconnect(addr).await;
+        if r.is_err() {
+            inner.migrating.store(false, Ordering::SeqCst);
+            // 握手失敗但舊連線已經被關掉：照一般失聯處理（找新房主）
+            if old.close_reason().is_some() && !inner.dead.load(Ordering::SeqCst) {
+                let _ = inner.ev_tx.send(ClientEvent::HostLost("重新連線失敗".into()));
+            }
+        }
+        r
+    }
+
     /// 找不到新房主：結束連線（發出 [`ClientEvent::Disconnected`]）
     pub fn give_up(&self, reason: &str) {
         if !self.inner.dead.swap(true, Ordering::SeqCst) {

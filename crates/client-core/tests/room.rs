@@ -486,3 +486,41 @@ async fn owner_transfers_only_to_members_who_can_relay() -> Result<()> {
     );
     Ok(())
 }
+
+/// 連線卡在 relay 時對同一個轉發者重新連線（`refresh_link`）：
+/// 轉發者會立刻關掉舊連線，不能被當成房主失聯；成員編號、訂閱照舊，語音繼續收得到
+#[tokio::test(flavor = "multi_thread")]
+async fn refresh_link_to_same_host_keeps_membership() -> Result<()> {
+    let room = start_room().await?;
+    let mut a = member(&room, "A", transport::generate_secret()).await?;
+    let b = member(&room, "B", transport::generate_secret()).await?;
+    let sa = a.c.subscribe(DEFAULT_CHANNEL, true, true)?;
+    let sb = b.c.subscribe(DEFAULT_CHANNEL, true, true)?;
+    let (ia, ib) = (a.c.session_idx(), b.c.session_idx());
+    wait_subs(&room.host, &[sub(ia, 0, true, true), sub(ib, 0, true, true)]).await;
+    while let Ok(Some(_)) = timeout(Duration::from_millis(100), a.ev.recv()).await {}
+
+    timeout(T, a.c.refresh_link()).await??;
+    assert_eq!(a.c.session_idx(), ia, "同一個 NodeId 重連要沿用成員編號");
+    // 固定看 1.5 秒（每秒都有 Rtt 事件，不能用「一段時間沒事件」當結束條件）
+    let mut reconnected = false;
+    let end = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while let Ok(Some(e)) = tokio::time::timeout_at(end, a.ev.recv()).await {
+        match e {
+            ClientEvent::HostLost(r) => panic!("重新連線不該被當成失聯：{r}"),
+            ClientEvent::Reconnected { .. } => reconnected = true,
+            _ => {}
+        }
+    }
+    assert!(reconnected);
+    wait_subs(&room.host, &[sub(ia, 0, true, true)]).await;
+    assert_eq!(room.host.member_count(), 2, "舊連線要被取代，不是多一個人");
+
+    for seq in 0..3u32 {
+        a.c.send_voice(Kind::Voice, mask(&[sa]), seq, &[1; 40]);
+    }
+    let got = collect(&b.c, Duration::from_millis(500)).await;
+    assert_eq!(got, (0..3).map(|s| (Kind::Voice, ia, s, mask(&[sb]))).collect::<Vec<_>>());
+    room.host_ep.close().await;
+    Ok(())
+}

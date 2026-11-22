@@ -48,6 +48,10 @@ const MAX_TARGET: u32 = 8;
 const OVERFLOW_SLACK: u32 = 4;
 /// 連續缺這麼多幀（100 ms）且沒有後續封包，視為對方已停止說話
 const MAX_MISSING_RUN: u32 = 5;
+/// 寬鬆模式（連線走 relay）：relay 是 TCP，掉包時整批卡住再一起到，
+/// 緩衝上限放到 300 ms、缺 300 ms 才當作講完，避免卡一下就斷句
+const RELAXED_MAX_TARGET: u32 = 15;
+const RELAXED_MAX_MISSING_RUN: u32 = 15;
 /// 保護上限，防止惡意或異常的大量封包
 const MAX_PACKETS: usize = 64;
 
@@ -60,6 +64,8 @@ pub struct JitterBuffer {
     /// 到達抖動估計（µs）
     jitter_us: f64,
     last_arrival: Option<(u64, u32)>,
+    /// 寬鬆模式（見 [`JitterBuffer::set_relaxed`]）
+    relaxed: bool,
     pub stats: Stats,
 }
 
@@ -78,6 +84,7 @@ impl JitterBuffer {
             target: MIN_TARGET,
             jitter_us: 0.0,
             last_arrival: None,
+            relaxed: false,
             stats: Stats::default(),
         }
     }
@@ -89,6 +96,20 @@ impl JitterBuffer {
 
     pub fn jitter_ms(&self) -> f64 {
         self.jitter_us / 1000.0
+    }
+
+    /// 連線走 relay 時開啟：緩衝上限與「視為講完」的等待時間放寬（延遲會變大，但比較不會斷）。
+    /// 目標深度只在一段話開始時重算，所以切換不會造成中途破音
+    pub fn set_relaxed(&mut self, relaxed: bool) {
+        self.relaxed = relaxed;
+    }
+
+    fn max_target(&self) -> u32 {
+        if self.relaxed { RELAXED_MAX_TARGET } else { MAX_TARGET }
+    }
+
+    fn max_missing_run(&self) -> u32 {
+        if self.relaxed { RELAXED_MAX_MISSING_RUN } else { MAX_MISSING_RUN }
     }
 
     pub fn is_active(&self) -> bool {
@@ -143,7 +164,7 @@ impl JitterBuffer {
     fn desired_target(&self) -> u32 {
         let need_us = 3.0 * self.jitter_us + 5_000.0;
         let frames = (need_us / FRAME_US as f64).ceil() as u32 + 1;
-        frames.clamp(MIN_TARGET, MAX_TARGET)
+        frames.clamp(MIN_TARGET, self.max_target())
     }
 
     pub fn pull(&mut self, now_us: u64) -> Pull {
@@ -200,7 +221,7 @@ impl JitterBuffer {
             Pull::Fec(p.clone())
         } else {
             missing_run += 1;
-            if missing_run > MAX_MISSING_RUN {
+            if missing_run > self.max_missing_run() {
                 // 對方停止說話但 end-of-stream 遺失了；若後面還有封包就重新對齊
                 match self.packets.first_key_value() {
                     Some((&s, _)) => {
@@ -269,6 +290,34 @@ mod tests {
         // 開頭先靜音累積 target 幀
         assert_eq!(out[0], None);
         assert_eq!(jb.stats.decoded, 10);
+    }
+
+    #[test]
+    fn relaxed_allows_deeper_buffer() {
+        let mut jb = JitterBuffer::new();
+        jb.jitter_us = 100_000.0; // 抖動很大（relay 卡頓）
+        assert_eq!(jb.desired_target(), MAX_TARGET);
+        jb.set_relaxed(true);
+        assert_eq!(jb.desired_target(), RELAXED_MAX_TARGET);
+    }
+
+    #[test]
+    fn relaxed_rides_through_stall() {
+        // 0..10 準時到，10..18 遺失（卡住 160 ms），18 之後繼續
+        let arrivals: Vec<_> =
+            (0..30u32).filter(|s| !(10..18).contains(s)).map(|s| (s as u64 * F, s)).collect();
+        // 一般模式：缺超過 100 ms 就當作講完，後面重新累積緩衝
+        let mut jb = JitterBuffer::new();
+        let out = run(&mut jb, &arrivals, 40);
+        assert!(out.iter().any(|p| p.is_none()) && out.iter().skip(4).take(20).any(|p| p.is_none()));
+        // 寬鬆模式：一路 PLC 撐過去，沒有中斷成靜音
+        let mut jb = JitterBuffer::new();
+        jb.set_relaxed(true);
+        let out = run(&mut jb, &arrivals, 40);
+        let first = out.iter().position(|p| p.is_some()).unwrap();
+        let last = out.iter().rposition(|p| p.is_some()).unwrap();
+        assert!(out[first..=last].iter().all(|p| p.is_some()), "{out:?}");
+        assert_eq!(jb.stats.decoded, 22);
     }
 
     #[test]

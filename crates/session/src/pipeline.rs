@@ -135,6 +135,8 @@ pub struct Shared {
     /// 拒聽：不聽也不說。照常消耗 jitter buffer，只是輸出靜音（取消時不會冒出累積的舊聲音）
     deafened: AtomicBool,
     pub tx_active: AtomicBool,
+    /// 我到轉發者的連線目前走 relay：jitter buffer 改用寬鬆模式（見 `JitterBuffer::set_relaxed`）
+    pub on_relay: AtomicBool,
     /// 目前有沒有麥克風（沒有就只能聽）
     pub has_mic: AtomicBool,
     // 進房後可即時調整的設定
@@ -192,6 +194,7 @@ impl Shared {
             muted: AtomicBool::new(false),
             deafened: AtomicBool::new(false),
             tx_active: AtomicBool::new(false),
+            on_relay: AtomicBool::new(false),
             has_mic: AtomicBool::new(true),
             denoise: AtomicBool::new(true),
             speech_mix: AtomicU32::new(0.3f32.to_bits()),
@@ -369,6 +372,11 @@ impl Shared {
         }
         s.target = if targets.is_empty() { "—".into() } else { targets.join("/") };
         s
+    }
+
+    /// 每位說話者各自的 jitter buffer 統計（算每個人的遺失率用）
+    pub fn jitter_per_sender(&self) -> Vec<(SessionIdx, mixer_core::jitter::Stats)> {
+        self.jitter.lock().unwrap().iter().map(|(&i, jb)| (i, jb.stats)).collect()
     }
 
     pub fn underruns(&self) -> u64 {
@@ -862,7 +870,9 @@ fn spawn_playback(
                 voices.retain(|k, _| jbs.contains_key(k));
                 let heard = shared.last_heard.lock().unwrap().clone();
                 let slots = *shared.slots.lock().unwrap();
+                let relaxed = shared.on_relay.load(Ordering::Relaxed);
                 for (&idx, jb) in jbs.iter_mut() {
+                    jb.set_relaxed(relaxed);
                     let pull = jb.pull(now);
                     if pull == Pull::Silent {
                         continue;
