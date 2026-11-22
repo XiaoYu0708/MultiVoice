@@ -79,6 +79,9 @@ pub struct Engine {
     pub strong: bool,
     /// 我聽某位成員的音量倍率（長按／右鍵調整；沒有 = 1.0）
     pub user_gain: BTreeMap<SessionIdx, f32>,
+    /// 連線走 relay：jitter buffer 改用寬鬆模式（見 `JitterBuffer::set_relaxed`）。
+    /// 網頁版一律走 relay 但不開（維持原本行為）；Android 依實際路徑切換
+    pub relaxed: bool,
     // 擷取
     enc: Option<Encoder>,
     denoiser: Denoiser,
@@ -135,6 +138,7 @@ impl Engine {
             denoise: true,
             strong: false,
             user_gain: BTreeMap::new(),
+            relaxed: false,
             enc: Encoder::new(BITRATE),
             denoiser: Denoiser::new(),
             scratch: Vec::with_capacity(FRAME_SAMPLES),
@@ -340,6 +344,7 @@ impl Engine {
         });
         let mut routed = Vec::new();
         for (&idx, sp) in self.speakers.iter_mut() {
+            sp.jb.set_relaxed(self.relaxed);
             let pull = sp.jb.pull(now);
             if pull == Pull::Silent {
                 continue;
@@ -393,6 +398,17 @@ impl Engine {
             .iter()
             .filter(|(_, sp)| now.saturating_sub(sp.last_us) < SPEAKING_US)
             .map(|(&i, sp)| (i, sp.via))
+            .collect()
+    }
+
+    /// 每位說話者各自的累計統計（算每個人的遺失率用；清掉的說話者不在裡面）
+    pub fn speaker_totals(&self) -> Vec<(SessionIdx, Totals)> {
+        self.speakers
+            .iter()
+            .map(|(&i, sp)| {
+                let s = &sp.jb.stats;
+                (i, Totals { decoded: s.decoded, fec: s.fec, plc: s.plc, late: s.late })
+            })
             .collect()
     }
 
