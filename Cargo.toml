@@ -21,7 +21,7 @@ members = [
 exclude = ["vendor"]
 
 [workspace.package]
-version = "0.10.6"
+version = "0.10.7"
 edition = "2024"
 publish = false
 
