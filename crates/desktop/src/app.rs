@@ -618,6 +618,14 @@ impl App {
             };
         });
         self.confirm_modal(ui);
+        // 房主把頻道裡的成員拖到頻道以外的地方放開：移出那個頻道（放在頻道卡片上的已經被卡片拿走）
+        if snap.is_owner
+            && ui.input(|i| i.pointer.any_released())
+            && let Some(p) = egui::DragAndDrop::take_payload::<DragMember>(ui.ctx())
+            && let (Some(from), Some(s)) = (p.from, &self.session)
+        {
+            s.move_member(p.idx, from, false);
+        }
         // 我聽各成員的音量（依名稱存，套到目前的成員編號）
         if let Some(s) = &self.session {
             let gains = snap
@@ -677,6 +685,10 @@ impl App {
                 .id_salt(if wide { "room-members-wide" } else { "room-members" })
                 .default_open(wide)
                 .show(ui, |ui| {
+                    if snap.is_owner && !snap.members.is_empty() {
+                        ui.weak("房主：拖動名字到頻道可以移進（只收聽）；把頻道裡的名字拖到別的頻道是換頻道，拖到頻道外面是移出");
+                        ui.add_space(4.0);
+                    }
                     for m in std::iter::once(&snap.me).chain(snap.members.iter()) {
                         let is_me = m.idx == snap.me.idx;
                         let manage = snap.is_owner && !is_me;
@@ -684,7 +696,16 @@ impl App {
                         let row = ui.horizontal(|ui| {
                             dot(ui, if m.speaking { GREEN } else { style::faint(ui) }, m.speaking);
                             let name = if is_me { format!("{}（我）", m.name) } else { m.name.clone() };
-                            ui.label(RichText::new(name).strong());
+                            if manage {
+                                let payload = DragMember { idx: m.idx, from: None };
+                                ui.dnd_drag_source(egui::Id::unique(("drag-member-list", m.idx)), payload, |ui| {
+                                    ui.label(RichText::new(name).strong())
+                                })
+                                .response
+                                .on_hover_text("拖到頻道卡片：把他移進那個頻道（只收聽）");
+                            } else {
+                                ui.label(RichText::new(name).strong());
+                            }
                             if m.is_owner {
                                 style::owner_icon(ui);
                             }
@@ -1206,7 +1227,9 @@ impl App {
         let mut moved: Option<(u16, ChannelId, bool)> = None;
         let volumes = self.settings.member_volumes.clone();
         let speaking = ch.members.iter().any(|m| m.speaking);
-        style::channel_card(ui, joined, speaking).show(ui, |ui| {
+        // 房主正在拖成員：這張卡片可以放下（游標在上面時加框提示）
+        let dragging = is_owner && egui::DragAndDrop::has_payload_of_type::<DragMember>(ui.ctx());
+        let card = style::channel_card(ui, joined, speaking).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 if self.renaming.as_ref().is_some_and(|(id, _)| *id == ch.id) {
@@ -1341,9 +1364,16 @@ impl App {
                                     ),
                                     None => "右鍵：調整聽這個人的音量".into(),
                                 };
-                                let r = ui
-                                    .add(egui::Label::new(&m.name).sense(egui::Sense::click()))
-                                    .on_hover_text(hover);
+                                let label = egui::Label::new(&m.name).sense(egui::Sense::click());
+                                // 房主可以把名字拖到別的頻道（移過去）或頻道外面（移出這個頻道）
+                                let r = if is_owner {
+                                    let payload = DragMember { idx: m.idx, from: Some(ch.id) };
+                                    ui.dnd_drag_source(egui::Id::unique(("drag-member", ch.id, m.idx)), payload, |ui| ui.add(label))
+                                        .inner
+                                } else {
+                                    ui.add(label)
+                                }
+                                .on_hover_text(hover);
                                 if m.is_owner {
                                     style::owner_icon(ui);
                                 }
@@ -1395,6 +1425,17 @@ impl App {
                 });
             }
         });
+        if dragging && card.response.contains_pointer() {
+            ui.painter().rect_stroke(
+                card.response.rect.expand(2.0),
+                12.0,
+                egui::Stroke::new(2.0, style::accent_text(ui)),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if is_owner && let Some(p) = card.response.dnd_release_payload::<DragMember>() {
+            drop_member(self.session.as_ref(), &p, ch);
+        }
         if let Some(t) = record {
             self.start_recording(t);
         }
@@ -1638,6 +1679,27 @@ impl eframe::App for App {
             // 背景還在查新版本：結果出來時要重畫
             ui.ctx().request_repaint_after(Duration::from_millis(500));
         }
+    }
+}
+
+/// 房主拖動中的成員：`from` = 從哪個頻道的名單拖出來（從成員卡片拖的是 None）
+#[derive(Clone, Copy)]
+struct DragMember {
+    idx: u16,
+    from: Option<ChannelId>,
+}
+
+/// 把拖過來的成員放到頻道 `ch`：從別的頻道拖來的先移出原頻道，還沒在 `ch` 就移進（只收聽）
+fn drop_member(session: Option<&Session>, p: &DragMember, ch: &session::ChannelView) {
+    let Some(s) = session else { return };
+    if p.from == Some(ch.id) {
+        return;
+    }
+    if let Some(from) = p.from {
+        s.move_member(p.idx, from, false);
+    }
+    if !ch.members.iter().any(|m| m.idx == p.idx) {
+        s.move_member(p.idx, ch.id, true);
     }
 }
 
