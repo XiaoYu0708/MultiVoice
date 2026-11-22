@@ -661,6 +661,15 @@ impl Host {
                 st.owner = Some(owner);
                 st.broadcast(HostMsg::OwnerChanged { owner });
             }
+            ClientMsg::MoveMember { session_idx: target, channel, join } => {
+                self.require_owner(&st, idx, "只有房主可以移動成員")?;
+                if !st.channels.contains_key(&channel) {
+                    return Err((ErrorCode::NoSuchChannel, "頻道不存在"));
+                }
+                let t = st.members.get(&target).ok_or((ErrorCode::BadMessage, "這位成員已經不在房間裡"))?;
+                info!("{}成員 #{target} {}：頻道 {channel}", if join { "移進" } else { "移出" }, t.info.display_name);
+                let _ = t.ctrl.send(HostMsg::Moved { channel, join });
+            }
             other => {
                 warn!("#{idx} 送了不該在這時送的訊息：{other:?}");
                 return Err((ErrorCode::BadMessage, "非預期的訊息"));

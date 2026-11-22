@@ -81,6 +81,8 @@ pub enum ClientEvent {
     InviteChanged,
     /// 我被管理者移出房間；連線已結束，不會再重連（v5）
     Kicked,
+    /// 管理者把我移進（只收聽）或移出這個頻道（v6）；上層照一般流程訂閱／退出
+    Moved { channel: ChannelId, join: bool },
 }
 
 /// 房間狀態（由控制訊息維護）
@@ -153,6 +155,12 @@ impl Room {
             HostMsg::OwnerChanged { owner } => {
                 self.owner = Some(owner);
                 ClientEvent::OwnerChanged(owner)
+            }
+            HostMsg::Moved { channel, join } => {
+                if !self.channels.contains_key(&channel) {
+                    return None;
+                }
+                ClientEvent::Moved { channel, join }
             }
             _ => return None,
         })
@@ -442,6 +450,11 @@ impl Client {
     /// 管理者：把房主（管理權）交給這位成員
     pub fn transfer_owner(&self, idx: SessionIdx) {
         self.send_ctrl(ClientMsg::TransferOwner { session_idx: idx });
+    }
+
+    /// 管理者：把這位成員移進（只收聽）或移出某個頻道（v6）
+    pub fn move_member(&self, idx: SessionIdx, channel: ChannelId, join: bool) {
+        self.send_ctrl(ClientMsg::MoveMember { session_idx: idx, channel, join });
     }
 
     /// 房主候補名單（依接手順序）

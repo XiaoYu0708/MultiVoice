@@ -38,7 +38,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 ## 架構（crates/）
 | crate | 用途 |
 |---|---|
-| `protocol` | 協定 v5（v3 房主轉移、v4 雙房主合併、v5 房主跟著開房的人＋踢人＋更換邀請）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
+| `protocol` | 協定 v6（v3 房主轉移、v4 雙房主合併、v5 房主跟著開房的人＋踢人＋更換邀請、v6 房主移動成員進出頻道）：邀請票、加入驗證、控制訊息、語音封包標頭（上行 13 bytes 含 `talk_mask`、下行 15 bytes 含 `via_mask`） |
 | `audio` | cpal 裝置（輸出為**立體聲**交錯、熱插拔偵測）、重取樣（`resample`）、Opus（libopus 1.6.1）、前端處理 `frontend`（RNNoise／DeepFilterNet3 降噪、VAD、AGC）、`list_devices`；`audio::denoise` 轉出 mixer-core 的 |
 | `mixer-core` | jitter buffer、混音、每頻道路由（音量取最大、pan、優先 ducking）、說話遮罩與提示音（`talk`）、RNNoise 降噪＋人聲混回（`denoise`）——桌面與網頁共用 |
 | `transport` | iroh 端點（relay 清單：自架 + n0 備援）、控制訊息讀寫、亂數 |
@@ -48,7 +48,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `session` | 建房／加入（async）+ 房主轉移流程（`takeover.rs`）+ 音訊管線（含按鍵說話 PTT、提示音）（同步、留在 UI 執行緒，cpal 串流不是 Send）+ 狀態快照 |
 | `web` | 網頁版（瀏覽器主執行緒，wasm-bindgen）：iroh WASM + `client-core`，前端檔案在 `crates/web/www/` |
 | `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、RNNoise 降噪（開著時關掉瀏覽器自己的降噪）、VAD、jitter buffer、混音；強力降噪透過匯入函式 `mv.dfn` 呼叫 `web-dfn` |
-| `web-dfn` | 網頁版強力降噪（DeepFilterNet3，含權重約 5.5 MB）：獨立的 `web_dfn.wasm`，用 SIMD128 建置，開了才下載，由 `worklet.js` 載入 |
+| `web-dfn` | 網頁版強力降噪（DeepFilterNet3，含權重約 5.5 MB）：獨立的 `web_dfn.wasm`。**選項已從三個版本拿掉**（聲音變悶、CPU 忙時斷斷續續），程式碼先留著不用 |
 | `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔（房間的頻道 + 我在各頻道的設定；開房時可選一個自動建好頻道）、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個、`crash.rs` 錯誤對話框與 OpenGL→wgpu 備援） |
 | `room-server` | 常駐房間（`multivoice-room-server`）：只轉發、沒有音訊，房間 ID／密鑰／端點金鑰存在 `--state` 檔，重開後邀請票不變；管理者是沒人持有的身分（沒人能換邀請、移出成員）。`deploy/` 的 Docker 服務 `room-server` 跑一個給 Play 商店審查用的房間 |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
@@ -91,9 +91,11 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - **M6 只做一部分**：不做身分組、封鎖名單、房間沉睡。已做的：
   - 「房主」＝管理者，是**開房的人**（不是負責轉發的那台；轉發者叫「轉發」，會自動換人，UI 的「讓出轉發」只換轉發者）。
     開房的人離開後沒人能管，同一台、同一個設定檔回來就恢復
-  - 房主才能改名／刪除頻道、移出成員、更換邀請、把房主交給別人（成員右鍵選單）；**只能交給桌面版成員**（網頁版不能當轉發者，所以也不能當房主）
+  - 房主才能改名／刪除頻道、移出成員、更換邀請、把房主交給別人、把成員移進（只收聽）／移出頻道（成員的「管理」選單或右鍵）；**只能交給桌面版成員**（網頁版、Android 版不能當轉發者，所以也不能當房主）
+  - 房間有「成員」卡片（每人加入了哪些頻道），位置規則同「音訊設定」，放在它上面；被移出頻道的人可以自己再加回去
   - **移出成員一定同時更換邀請**（新密鑰只發給其他人，不需要封鎖名單）；複製邀請連結大家都可以
   - 頻道改名後設定跟著走、relay 權杖保留
+- **不做強力降噪**（DeepFilterNet3）：成員開了之後聲音變悶、斷斷續續，三個版本都拿掉，舊設定一律當成關閉
 - 網頁版：加入頻道就是收聽（不要「收聽」勾選）；不要浮動視窗與「背景只收聽」（改用 WebRTC 通話讓手機背景可說可聽）
 - 桌面版與網頁版進房時麥克風預設靜音
 - **桌面版一律以系統管理員執行**（`main.rs` 開頭：不是管理員就跳 UAC 重新啟動自己，UAC 按「否」就不開），讓以管理員執行的遊戲在前景時也能按鍵說話。

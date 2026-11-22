@@ -19,8 +19,6 @@ pub struct Settings {
     pub gate_dbfs: f32,
     /// 自動音量（AGC）
     pub agc: bool,
-    /// 強力降噪（DeepFilterNet3）
-    pub strong_denoise: bool,
     /// 輸出音量（1.0 = 原音量）
     pub output_volume: f32,
     /// 最近一次使用的邀請票（方便重新加入）
@@ -61,7 +59,6 @@ impl Default for Settings {
             speech_mix: 0.3,
             gate_dbfs: -50.0,
             agc: true,
-            strong_denoise: false,
             output_volume: 1.0,
             last_ticket: String::new(),
             ptt_keys: BTreeMap::new(),
@@ -132,7 +129,6 @@ impl Settings {
             mix: self.speech_mix,
             gate_dbfs: self.gate_dbfs,
             agc: self.agc,
-            strong_denoise: self.strong_denoise,
             volume: self.output_volume,
             cues: self.cues,
             cue_volume: self.cue_volume,
@@ -149,7 +145,8 @@ impl Settings {
             speech_mix: self.speech_mix,
             gate_dbfs: self.gate_dbfs,
             agc: self.agc,
-            strong: self.strong_denoise,
+            // 強力降噪（DeepFilterNet3）已拿掉：會讓聲音變悶、CPU 忙時斷斷續續。舊設定檔的 strong_denoise 直接忽略
+            strong: false,
         }
     }
 

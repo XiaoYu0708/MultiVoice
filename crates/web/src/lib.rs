@@ -226,6 +226,12 @@ fn handle_event(inner: &Rc<Inner>, ev: ClientEvent) -> serde_json::Value {
         // 網址列的邀請票也要換成新的（重新整理頁面才回得來）
         ClientEvent::InviteChanged => json!({ "type": "invite", "text": "邀請連結已更換，舊的連結不能再用" }),
         ClientEvent::OwnerChanged(_) => json!({ "type": "room" }),
+        // 房主把我移進（只收聽）或移出頻道：app.js 照一般流程加入／離開
+        ClientEvent::Moved { channel, join } => {
+            let name = inner.client.channels().into_iter().find(|c| c.id == channel).map(|c| c.name).unwrap_or_default();
+            let text = if join { format!("房主把你加進「{name}」（只收聽）") } else { format!("房主把你移出「{name}」") };
+            json!({ "type": "moved", "channel": channel, "join": join, "text": text })
+        }
         ClientEvent::MemberLeft(_)
         | ClientEvent::MemberJoined(_)
         | ClientEvent::ChannelAdded(_)

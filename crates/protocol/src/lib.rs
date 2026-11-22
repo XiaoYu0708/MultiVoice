@@ -15,7 +15,7 @@ pub mod voice;
 /// v3：房主轉移（Standby、Successors、MigrateTo）
 /// v4：雙房主合併（HostProbe、HostInfo、MoveTo）
 /// v5：管理權跟著開房的人（Welcome.owner／relay、OwnerChanged、TransferOwner）、踢人（Kick、Kicked）、更換邀請（RotateSecret、SecretChanged）
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// iroh 連線的 ALPN。**固定不變**：版本差異由 Hello 的 `protocol_version` 處理，
 /// 這樣舊版客戶端才會收到「請更新」的錯誤訊息，而不是在 TLS 握手就被拒絕。

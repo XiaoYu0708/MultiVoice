@@ -24,6 +24,7 @@
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
     <symbol id="i-crown" viewBox="0 0 24 24"><path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
     <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
@@ -66,7 +67,7 @@
       <li><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg>
         <span>手機可以直接切到遊戲或鎖定螢幕，照樣說話和收聽。</span></li>
       <li><svg class="ic" aria-hidden="true"><use href="#i-wave"/></svg>
-        <span>內建和桌面版相同的降噪；背景很吵時可以在「音訊設定」打開強力降噪。用喇叭也不怕回音（回音消除一直開著）。</span></li>
+        <span>內建和桌面版相同的降噪，用喇叭也不怕回音（回音消除一直開著）。</span></li>
       <li><svg class="ic" aria-hidden="true"><use href="#i-cloud"/></svg>
         <span>網頁版一律經過轉送伺服器連線，延遲比桌面版多一點，也不能當房主。</span></li>
     </ul>
@@ -118,6 +119,11 @@
 
   <!-- 側欄：手機上照順序排在頻道下面（操作列固定在畫面底部）；寬螢幕放在右邊一欄 -->
   <aside class="side">
+  <!-- 成員列表（和桌面版一致）：每人一列，下面是他加入的頻道；寬螢幕預設展開 -->
+  <details class="panel settings members-panel">
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg><span id="members-title">成員</span><svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+    <ul id="member-list" class="member-list"></ul>
+  </details>
   <details class="panel settings">
     <summary><svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg><span>音訊設定</span><svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
     <label class="field">
@@ -130,8 +136,6 @@
       <small class="muted">「偵測說話」模式下聲音比門檻大才送出（音量條上的黃線）。背景吵就調高，講話常被切掉就調低。</small>
     </label>
     <label class="check"><input id="denoise" type="checkbox"> 降噪（和桌面版相同的 RNNoise，壓掉風扇、鍵盤等背景噪音）</label>
-    <label class="check sub"><input id="strong" type="checkbox"> <span>強力降噪（DeepFilterNet，和桌面版相同）<small class="muted" id="strong-state"></small></span></label>
-    <p class="muted small sub">背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。第一次開會下載約 5 MB；較舊的手機可能會斷音。</p>
     <label class="check"><input id="cues" type="checkbox"> 開／關麥提示音</label>
     <div class="field sub" id="cue-volume-field">
       <span>提示音音量 <b id="cue-volume-val"></b> <button type="button" class="ghost small-btn" id="cue-preview">試聽</button></span>

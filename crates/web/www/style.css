@@ -223,7 +223,7 @@ input[type="checkbox"]:checked {
 input[type="checkbox"]:checked::before { transform: translateX(18px); background: #fff; }
 input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
 .check { display: flex; align-items: center; gap: 12px; margin: 12px 0; cursor: pointer; min-height: 32px; }
-/* 屬於上一個選項的子選項（降噪底下的強力降噪） */
+/* 屬於上一個選項的子選項（例如提示音底下的提示音音量） */
 .sub { margin-left: 30px; }
 p.sub { margin-top: -6px; }
 .check:has(input:disabled) { opacity: 0.5; cursor: default; }
@@ -503,6 +503,18 @@ button.icon-only { width: 44px; padding: 0; }
 .new-channel { display: flex; gap: 8px; margin-top: 12px; }
 .new-channel input { flex: 1; }
 .new-channel button { flex: none; }
+
+/* 成員列表 */
+.member-list { list-style: none; padding: 0; }
+.member-list li { padding: 10px 0; border-top: 1px solid var(--line); }
+.member-list li:first-child { border-top: none; padding-top: 0; }
+.member-row { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
+.member-row .name { overflow-wrap: anywhere; }
+.member-row .ic { width: 14px; height: 14px; color: var(--amber); flex: none; }
+.member-chans { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 18px; }
+/* 頻道名稱太長時截斷，完整名稱放在 title */
+.member-chans .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+.member-chans .badge.talking { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: color-mix(in srgb, var(--green) 14%, transparent); }
 
 /* 音訊設定 */
 .settings { padding: 0; }

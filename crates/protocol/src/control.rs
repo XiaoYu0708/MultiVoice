@@ -91,6 +91,9 @@ pub enum ClientMsg {
     RotateSecret,
     /// 管理者：把管理權交給這位成員（他要能當轉發者，也就是有宣告備用端點）（v5）
     TransferOwner { session_idx: SessionIdx },
+    /// 管理者：把這位成員移進（`join = true`，只收聽）或移出某個頻道（v6）。
+    /// 房主只轉告本人（[`HostMsg::Moved`]），由他自己照一般流程訂閱／退出（槽位由成員自己挑）
+    MoveMember { session_idx: SessionIdx, channel: ChannelId, join: bool },
 }
 
 /// 房主 → 成員
@@ -135,6 +138,8 @@ pub enum HostMsg {
     Kicked,
     /// 管理權換人（v5）
     OwnerChanged { owner: NodeId },
+    /// 管理者把你移進（只收聽）或移出這個頻道（v6）；移出後可以自己再加回去
+    Moved { channel: ChannelId, join: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

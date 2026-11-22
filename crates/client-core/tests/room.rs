@@ -524,3 +524,48 @@ async fn refresh_link_to_same_host_keeps_membership() -> Result<()> {
     room.host_ep.close().await;
     Ok(())
 }
+
+/// v6：房主把成員移進／移出頻道，本人收到 Moved（照一般流程訂閱）；一般成員不能移動別人
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_moves_member_between_channels() -> Result<()> {
+    let owner_key = transport::generate_secret();
+    let room = start_room_owned(Some(transport::node_id(&owner_key.public()))).await?;
+    let mut a = member(&room, "房主", owner_key).await?;
+    let mut b = member(&room, "成員", transport::generate_secret()).await?;
+    let _ = next_event(&mut a.ev).await; // B 加入
+    a.c.create_channel("小隊");
+    let ch = wait_channel(&room.host, "小隊").await;
+    while !matches!(next_event(&mut b.ev).await, ClientEvent::ChannelAdded(_)) {}
+    let (ia, ib) = (a.c.session_idx(), b.c.session_idx());
+
+    // 一般成員不能移動別人
+    b.c.move_member(ia, ch, true);
+    match next_event(&mut b.ev).await {
+        ClientEvent::HostError(code, _) => assert_eq!(code, ErrorCode::Forbidden),
+        e => panic!("預期 Forbidden，收到 {e:?}"),
+    }
+
+    // 房主移進：B 收到 Moved，自己訂閱（只收聽）
+    a.c.move_member(ib, ch, true);
+    match next_event(&mut b.ev).await {
+        ClientEvent::Moved { channel, join } => assert_eq!((channel, join), (ch, true)),
+        e => panic!("預期 Moved，收到 {e:?}"),
+    }
+    b.c.subscribe(ch, true, false)?;
+    wait_subs(&room.host, &[sub(ib, ch, true, false)]).await;
+
+    // 房主移出
+    a.c.move_member(ib, ch, false);
+    loop {
+        match next_event(&mut b.ev).await {
+            ClientEvent::Moved { channel, join } => {
+                assert_eq!((channel, join), (ch, false));
+                break;
+            }
+            ClientEvent::SubscriptionChanged(_) => continue,
+            e => panic!("預期 Moved，收到 {e:?}"),
+        }
+    }
+    room.host_ep.close().await;
+    Ok(())
+}

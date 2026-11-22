@@ -22,7 +22,6 @@ const settings = {
   volume: store.get('volume', 1),
   gate: store.get('gate', -50),
   denoise: store.get('denoise', true),
-  strong: store.get('strong', false),
   cues: store.get('cues', true),
   cueVolume: store.get('cueVolume', 1),
   wakelock: store.get('wakelock', true),
@@ -123,7 +122,6 @@ async function startAudio() {
   sentSlots = new Map();
   sentGains = new Map();
   pushSettings();
-  loadDfn();
   await enableMic();
 }
 
@@ -176,48 +174,8 @@ navigator.mediaDevices?.addEventListener?.('devicechange', () => {
   if (ctx && node && !micStream && micProblem === 'none') enableMic();
 });
 
-// ---------------------------------------------------------------- strong noise suppression
-// DeepFilterNet3 (same as the desktop app's 強力降噪) lives in web_dfn.wasm, built with WebAssembly SIMD;
-// downloaded the first time it is turned on and handed to the worklet (see worklet.js).
-// Tiny module using a SIMD instruction (from wasm-feature-detect): browsers without SIMD reject it.
-const SIMD = (() => {
-  try {
-    return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
-  } catch { return false; }
-})();
-let dfnBytes = null;   // Promise<ArrayBuffer>, kept for the next AudioWorklet (every join makes a new one)
-let dfnState = '';     // for the current worklet: '' | 'loading' | 'ready' | 'error'
-function loadDfn() {
-  if (!node || !SIMD || !settings.denoise || !settings.strong || dfnState === 'loading' || dfnState === 'ready') return;
-  dfnState = 'loading';
-  renderStrong();
-  const target = node;
-  dfnBytes ??= fetch('web_dfn.wasm').then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); });
-  dfnBytes.then((b) => {
-    if (node !== target) return;
-    const copy = b.slice(0);
-    post({ t: 'dfn', bytes: copy }, [copy]);
-  }, (e) => {
-    dfnBytes = null;
-    if (node !== target) return;
-    dfnState = 'error';
-    log('強力降噪下載失敗：' + e.message);
-    renderStrong();
-  });
-}
-function renderStrong() {
-  $('#strong').disabled = !SIMD || !settings.denoise;
-  $('#strong-state').textContent = !SIMD ? '（這個瀏覽器不支援）'
-    : !settings.denoise || !settings.strong ? ''
-    : dfnState === 'loading' ? '（下載中…）'
-    : dfnState === 'error' ? '（載入失敗，改用一般降噪）'
-    : dfnState === 'ready' ? '（使用中）' : '';
-}
-function applyStrong() {
-  pushSettings();
-  loadDfn();
-  renderStrong();
-}
+// 強力降噪（DeepFilterNet3）已拿掉：會讓聲音變悶、較慢的裝置會斷音。舊的 'strong' 設定直接忽略。
+// web_dfn.wasm 與 worklet.js 的載入程式先留著，只是不再用到。
 
 /** Our own RNNoise (same as the desktop app) replaces the browser's noise suppression; denoising twice
  *  makes voices sound muffled. Echo cancellation always stays on (phones use the speaker). */
@@ -225,7 +183,7 @@ function micConstraints() {
   return { echoCancellation: true, noiseSuppression: !settings.denoise, autoGainControl: true, channelCount: 1 };
 }
 function applyDenoise() {
-  applyStrong();
+  pushSettings();
   micStream?.getAudioTracks()[0]?.applyConstraints(micConstraints()).catch(() => {});
 }
 
@@ -244,7 +202,6 @@ function stopAudio() {
   micProblem = '';
   try { node?.disconnect(); } catch {}
   node = null;
-  dfnState = '';
   ctx?.close().catch(() => {});
   ctx = null;
 }
@@ -256,7 +213,6 @@ function pushSettings() {
   post({ t: 'cueVolume', v: settings.cueVolume });
   post({ t: 'gate', db: settings.gate });
   post({ t: 'denoise', on: settings.denoise });
-  post({ t: 'strong', on: settings.denoise && settings.strong });
   post({ t: 'flags', muted, deafened, cues: settings.cues });
 }
 
@@ -264,11 +220,6 @@ function onWorklet(m) {
   if (m.t === 'out') room?.send_packets(new Uint8Array(m.b));
   else if (m.t === 'status') { audioStatus = parseStatus(m.s); renderAudio(); }
   else if (m.t === 'error') log('音訊引擎錯誤：' + m.msg);
-  else if (m.t === 'dfn') {
-    dfnState = m.ok ? 'ready' : 'error';
-    if (!m.ok) log('強力降噪載入失敗：' + m.msg);
-    renderStrong();
-  }
 }
 
 function parseStatus(s) {
@@ -374,6 +325,7 @@ async function eventLoop(r) {
     if (ev.type === 'disconnected') { exitRoom(ev.text); return; }
     if (ev.type === 'invite') { history.replaceState(null, '', '#' + r.ticket()); log(ev.text); }
     if (ev.type === 'log' || ev.type === 'error') log(ev.text);
+    if (ev.type === 'moved') onMoved(ev);
     if (ev.type !== 'rtt') refresh();
   }
 }
@@ -451,6 +403,24 @@ function joinChannel(id) {
   refresh();
 }
 
+/** 房主把我移進（只收聽，不改我存的說話方式）或移出頻道；之後我可以自己再改 */
+function onMoved(ev) {
+  const has = joined.has(ev.channel);
+  if (ev.join && !has) {
+    const ch = state?.channels.find((c) => c.id === ev.channel);
+    const pref = ch ? chanPrefs()[ch.name] ?? {} : {};
+    try {
+      room.subscribe(ev.channel, true, false);
+      joined.set(ev.channel, { mode: 'off', listen: true, volume: pref.volume ?? 1 });
+    } catch (ex) { log(String(ex.message || ex)); return; }
+  } else if (!ev.join && has) {
+    joined.delete(ev.channel);
+    held.delete(ev.channel);
+    room.unsubscribe(ev.channel);
+  } else return;
+  log(ev.text);
+}
+
 function leaveChannel(id) {
   joined.delete(id);
   held.delete(id);
@@ -468,6 +438,47 @@ function updateChannel(id, change) {
   if (cfg.mode !== 'ptt') held.delete(id);
   savePrefs(ch.name, cfg);
   refresh();
+}
+
+/** 成員列表：每人一列（我排第一），下面列出他加入的頻道；只收聽的寫「只聽」（不只靠顏色） */
+function renderMembers() {
+  $('#members-title').textContent = `成員（${state.members.length}）`;
+  const talking = audioStatus?.speaking;
+  const list = [...state.members].sort((a, b) => (b.me ? 1 : 0) - (a.me ? 1 : 0) || a.idx - b.idx);
+  $('#member-list').replaceChildren(...list.map((m) => {
+    const li = document.createElement('li');
+    const row = document.createElement('div');
+    row.className = 'member-row';
+    const dot = document.createElement('span');
+    const speaking = !m.me && talking?.has(m.idx);
+    dot.className = speaking ? 'dot ok' : 'dot';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = m.me ? `${m.name}（我）` : m.name;
+    row.append(dot, name);
+    if (state.owner === m.idx) {
+      row.insertAdjacentHTML('beforeend', '<svg class="ic" role="img" aria-label="房主"><title>房主</title><use href="#i-crown"/></svg>');
+    }
+    const chans = document.createElement('div');
+    chans.className = 'member-chans';
+    for (const ch of state.channels) {
+      const sub = ch.members.find((x) => x.idx === m.idx);
+      if (!sub) continue;
+      const b = document.createElement('span');
+      b.className = 'badge';
+      b.textContent = sub.listen && !sub.talk ? `${ch.name}・只聽` : ch.name;
+      b.title = b.textContent;
+      chans.append(b);
+    }
+    if (!chans.childElementCount) {
+      const none = document.createElement('span');
+      none.className = 'muted small';
+      none.textContent = '沒有加入頻道';
+      chans.append(none);
+    }
+    li.append(row, chans);
+    return li;
+  }));
 }
 
 /** Re-read the room state and update everything */
@@ -591,6 +602,7 @@ function renderRoom() {
     $('#conn-text').textContent = `已連線（${via}${rtt}）`;
   }
   $('#member-count').textContent = `${state.members.length} 人在房間`;
+  renderMembers();
   // 房主是誰（所有人都看得到）：皇冠圖示 + 名字；不在房間裡時皇冠變灰。圖示沒有文字，用 aria-label／title 說明
   const ownerName = state.owner == null ? '' : state.owner === state.me ? '你' : memberName(state.owner);
   const ownerLabel = state.owner == null ? '房主不在房間裡' : `房主：${ownerName}`;
@@ -752,7 +764,7 @@ new ResizeObserver(([e]) => {
   document.documentElement.style.setProperty('--dock-h', `${e.target.offsetHeight}px`);
 }).observe($('.dock'));
 // 寬螢幕（電腦全螢幕）時音訊設定在右邊側欄，空間夠，預設展開
-if (matchMedia('(min-width: 1024px)').matches) $('.settings').open = true;
+if (matchMedia('(min-width: 1024px)').matches) document.querySelectorAll('.settings').forEach((d) => { d.open = true; });
 $('#mute-btn').addEventListener('click', () => {
   // un-muting while deafened also un-deafens (same as desktop)
   if (muted || deafened) { muted = false; deafened = false; } else muted = true;
@@ -785,8 +797,6 @@ function bindSetting(id, key, fmt, apply) {
 bindSetting('volume', 'volume', (v) => Math.round(v * 100) + '%', pushSettings);
 bindSetting('gate', 'gate', (v) => `${v} dB`, () => { pushSettings(); renderAudio(); });
 bindSetting('denoise', 'denoise', null, applyDenoise);
-bindSetting('strong', 'strong', null, applyStrong);
-renderStrong();
 bindSetting('cues', 'cues', null, () => { pushSettings(); renderCueVolume(); });
 bindSetting('cue-volume', 'cueVolume', (v) => Math.round(v * 100) + '%', pushSettings);
 // release the slider (or the preview button) -> play the cue once at the new volume

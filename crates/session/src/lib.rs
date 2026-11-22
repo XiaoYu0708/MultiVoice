@@ -113,6 +113,10 @@ pub struct MemberView {
     pub idx: SessionIdx,
     pub name: String,
     pub speaking: bool,
+    /// 他是房主
+    pub is_owner: bool,
+    /// 能當轉發者（桌面版）：房主只能交給這些人
+    pub can_own: bool,
 }
 
 /// 頻道裡的一位成員
@@ -437,6 +441,26 @@ impl Session {
                         r.disconnected = Some(why);
                         takeover2.on_kicked();
                     }
+                    // 房主把我移進（只收聽）或移出頻道：照一般流程訂閱／退出，之後我可以自己再改
+                    ClientEvent::Moved { channel, join } => {
+                        let name = r.channel_names.get(&channel).cloned().unwrap_or_else(|| format!("#{channel}"));
+                        let joined = shared2.channel_cfgs().contains_key(&channel);
+                        if join && !joined {
+                            let cfg = ChannelCfg { listen: true, talk: TalkMode::Off, mix: ChannelMix::default(), ptt_key: None };
+                            if client2.subscribe(channel, true, false).is_ok() {
+                                shared2.set_cfg(channel, Some(cfg));
+                                shared2.rebuild(&client2.my_slots());
+                                r.push_log(format!("房主把你加進「{name}」（只收聽）"));
+                                r.notify(format!("房主把你加進「{name}」，目前只收聽"), false);
+                            }
+                        } else if !join && joined {
+                            client2.unsubscribe(channel);
+                            shared2.set_cfg(channel, None);
+                            shared2.rebuild(&client2.my_slots());
+                            r.push_log(format!("房主把你移出「{name}」"));
+                            r.notify(format!("房主把你移出「{name}」"), false);
+                        }
+                    }
                 }
             }
         });
@@ -563,15 +587,27 @@ impl Session {
         self.client.transfer_owner(idx);
     }
 
+    /// 房主：把這位成員移進（只收聽）或移出某個頻道；他之後可以自己再改
+    pub fn move_member(&self, idx: SessionIdx, channel: ChannelId, join: bool) {
+        self.client.move_member(idx, channel, join);
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let speaking = self.shared.speaking(Duration::from_millis(300));
         let talking_to = self.shared.talking_to();
         let my_idx = self.client.session_idx();
         let names: HashMap<SessionIdx, String> =
             self.client.members().into_iter().map(|m| (m.session_idx, m.display_name)).collect();
+        let owner_idx = self.owner_idx();
         let members = names
             .iter()
-            .map(|(&idx, name)| MemberView { idx, name: name.clone(), speaking: speaking.iter().any(|(i, _)| *i == idx) })
+            .map(|(&idx, name)| MemberView {
+                idx,
+                name: name.clone(),
+                speaking: speaking.iter().any(|(i, _)| *i == idx),
+                is_owner: owner_idx == Some(idx),
+                can_own: self.client.can_relay(idx),
+            })
             .collect::<Vec<_>>();
         let mut members = members;
         members.sort_by_key(|m| m.idx);
@@ -590,7 +626,6 @@ impl Session {
         };
         let cfgs = self.shared.channel_cfgs();
         let subs = self.client.subscriptions();
-        let owner_idx = self.owner_idx();
         let channels = self
             .client
             .channels()
@@ -657,7 +692,13 @@ impl Session {
             r.last_relay = Some(relay);
         }
         Snapshot {
-            me: MemberView { idx: my_idx, name: self.name.clone(), speaking: tx_active },
+            me: MemberView {
+                idx: my_idx,
+                name: self.name.clone(),
+                speaking: tx_active,
+                is_owner: owner_idx == Some(my_idx),
+                can_own: false,
+            },
             members,
             channels,
             talking_to: talking_to.iter().filter_map(|c| channel_names.get(c).cloned()).collect(),

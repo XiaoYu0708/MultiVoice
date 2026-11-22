@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
-use protocol::DEFAULT_CHANNEL;
+use protocol::{ChannelId, DEFAULT_CHANNEL};
 use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkeys};
 
 use crate::presets;
@@ -518,23 +518,12 @@ impl App {
         group_title(ui, "麥克風處理", true);
         style::toggle(ui, &mut self.settings.denoise, "降噪（消除風扇、鍵盤等背景聲）");
         if self.settings.denoise {
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.settings.strong_denoise, false, "標準");
-                let hint = if in_room {
-                    "背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲"
-                } else {
-                    "背景很吵（冷氣、風扇、鍵盤）時更乾淨，但多約 20 ms 延遲。可以在下面的麥克風測試開「聽自己的聲音」比較"
-                };
-                ui.radio_value(&mut self.settings.strong_denoise, true, "強力（DeepFilterNet）").on_hover_text(hint);
-            });
-            if !self.settings.strong_denoise {
-                labeled_slider(
-                    ui,
-                    "小聲講話保留",
-                    egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).step_by(0.05).custom_formatter(percent),
-                );
-                ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
-            }
+            labeled_slider(
+                ui,
+                "小聲講話保留",
+                egui::Slider::new(&mut self.settings.speech_mix, 0.0..=0.6).step_by(0.05).custom_formatter(percent),
+            );
+            ui.weak("調高：小聲的字更清楚，但講話時會多一點背景聲");
         }
         ui.add_space(4.0);
         labeled_slider(
@@ -656,6 +645,8 @@ impl App {
                     ui.add_space(6.0);
                     self.me_card(ui, snap);
                     ui.add_space(6.0);
+                    self.room_members_card(ui, snap, true);
+                    ui.add_space(6.0);
                     self.room_audio_card(ui, true);
                     ui.add_space(4.0);
                     self.recent_events(ui, snap);
@@ -668,8 +659,76 @@ impl App {
             ui.add_space(8.0);
             self.room_channels(ui, snap);
             ui.add_space(6.0);
+            self.room_members_card(ui, snap, false);
+            ui.add_space(6.0);
             self.room_audio_card(ui, false);
             self.recent_events(ui, snap);
+        }
+    }
+
+    /// 成員列表（和網頁版一致）：每人一列，下面是他加入的頻道；寬視窗在側欄、預設展開，窄視窗在頻道下面、預設收起。
+    /// 房主每列有「管理」（右鍵整列也可以）：勾選頻道把他移進（只收聽）或移出、交出房主、移出房間
+    fn room_members_card(&mut self, ui: &mut egui::Ui, snap: &Snapshot, wide: bool) {
+        let mut ask: Option<Confirm> = None;
+        let mut moved: Option<(u16, ChannelId, bool)> = None;
+        style::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::CollapsingHeader::new(RichText::new(format!("成員（{}）", snap.members.len() + 1)).strong())
+                .id_salt(if wide { "room-members-wide" } else { "room-members" })
+                .default_open(wide)
+                .show(ui, |ui| {
+                    for m in std::iter::once(&snap.me).chain(snap.members.iter()) {
+                        let is_me = m.idx == snap.me.idx;
+                        let manage = snap.is_owner && !is_me;
+                        let mut act = None;
+                        let row = ui.horizontal(|ui| {
+                            dot(ui, if m.speaking { GREEN } else { style::faint(ui) }, m.speaking);
+                            let name = if is_me { format!("{}（我）", m.name) } else { m.name.clone() };
+                            ui.label(RichText::new(name).strong());
+                            if m.is_owner {
+                                style::owner_icon(ui);
+                            }
+                            if manage {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.menu_button("管理", |ui| act = member_menu(ui, m.idx, &m.name, m.can_own, &snap.channels));
+                                });
+                            }
+                        });
+                        // 右鍵整列也能打開同一個選單（「管理」按鈕是看得到的入口）
+                        if manage {
+                            row.response.interact(egui::Sense::click()).context_menu(|ui| {
+                                act = member_menu(ui, m.idx, &m.name, m.can_own, &snap.channels);
+                            });
+                        }
+                        match act {
+                            Some(MemberAction::Ask(c)) => ask = Some(c),
+                            Some(MemberAction::Move(c, j)) => moved = Some((m.idx, c, j)),
+                            None => {}
+                        }
+                        // 他加入的頻道：一個頻道一個標籤，只收聽的寫出來（不只靠顏色）
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(18.0);
+                            let mut any = false;
+                            for ch in &snap.channels {
+                                let Some(cm) = ch.members.iter().find(|x| x.idx == m.idx) else { continue };
+                                any = true;
+                                let text = if cm.listen && !cm.talk { format!("{}・只聽", ch.name) } else { ch.name.clone() };
+                                let color = if cm.speaking { GREEN } else { style::accent_text(ui) };
+                                style::badge(ui, text, color);
+                            }
+                            if !any {
+                                ui.weak("沒有加入頻道");
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+                });
+        });
+        if ask.is_some() {
+            self.confirm = ask;
+        }
+        if let (Some((idx, c, j)), Some(s)) = (moved, &self.session) {
+            s.move_member(idx, c, j);
         }
     }
 
@@ -828,7 +887,7 @@ impl App {
         self.drive_pending_apply(snap);
         self.presets_bar(ui, snap);
         for ch in &snap.channels {
-            self.channel_card(ui, ch, snap.is_owner);
+            self.channel_card(ui, ch, snap.is_owner, &snap.channels);
             ui.add_space(2.0);
         }
         // 新增頻道
@@ -1134,7 +1193,7 @@ impl App {
     }
 
     /// `is_owner`：房主才顯示改名／刪除、移出成員、交出房主
-    fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView, is_owner: bool) {
+    fn channel_card(&mut self, ui: &mut egui::Ui, ch: &session::ChannelView, is_owner: bool, all: &[session::ChannelView]) {
         let Some(s) = &self.session else { return };
         let joined = ch.mine.is_some();
         // 閉包裡借著 session，不能呼叫 &mut self 的方法：先記下，結束後再開始錄製
@@ -1143,6 +1202,8 @@ impl App {
         let mut vol_change: Option<(String, Option<f32>)> = None;
         // 房主在「管理」選單選的操作，結束後跳確認對話框
         let mut ask: Option<Confirm> = None;
+        // 房主把某人移進／移出頻道
+        let mut moved: Option<(u16, ChannelId, bool)> = None;
         let volumes = self.settings.member_volumes.clone();
         let speaking = ch.members.iter().any(|m| m.speaking);
         style::channel_card(ui, joined, speaking).show(ui, |ui| {
@@ -1322,19 +1383,10 @@ impl App {
                             }
                             if is_owner && !m.is_me {
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.menu_button("管理", |ui| {
-                                        let r = ui
-                                            .add_enabled(m.can_own, egui::Button::new("把房主交給他…"))
-                                            .on_hover_text("他之後可以改名、刪除頻道、移出成員；你會變成一般成員")
-                                            .on_disabled_hover_text("只能交給用桌面版的成員（網頁版不能當房主）");
-                                        if r.clicked() {
-                                            ask = Some(Confirm::Transfer(m.idx, m.name.clone()));
-                                        }
-                                        ui.separator();
-                                        // 危險操作：紅字、跟一般操作用分隔線隔開
-                                        if ui.button(RichText::new("移出房間…").color(RED)).clicked() {
-                                            ask = Some(Confirm::Kick(m.idx, m.name.clone()));
-                                        }
+                                    ui.menu_button("管理", |ui| match member_menu(ui, m.idx, &m.name, m.can_own, all) {
+                                        Some(MemberAction::Ask(c)) => ask = Some(c),
+                                        Some(MemberAction::Move(c, j)) => moved = Some((m.idx, c, j)),
+                                        None => {}
                                     });
                                 });
                             }
@@ -1348,6 +1400,9 @@ impl App {
         }
         if ask.is_some() {
             self.confirm = ask;
+        }
+        if let (Some((idx, c, j)), Some(s)) = (moved, &self.session) {
+            s.move_member(idx, c, j);
         }
         if let Some((name, v)) = vol_change {
             match v {
@@ -1584,6 +1639,41 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(Duration::from_millis(500));
         }
     }
+}
+
+/// 房主在成員「管理」選單選的操作
+enum MemberAction {
+    /// 要先確認的操作（交出房主、移出房間）
+    Ask(Confirm),
+    /// 把他移進（true，只收聽）或移出（false）這個頻道：不用確認，他之後可以自己再改
+    Move(ChannelId, bool),
+}
+
+/// 房主對某位成員的「管理」選單（成員卡片與頻道成員名單共用）
+fn member_menu(ui: &mut egui::Ui, idx: u16, name: &str, can_own: bool, channels: &[session::ChannelView]) -> Option<MemberAction> {
+    let mut act = None;
+    ui.label(RichText::new("所在頻道").strong());
+    ui.weak("勾選＝移進（只收聽），取消＝移出；他之後可以自己再改");
+    for ch in channels {
+        let mut inside = ch.members.iter().any(|x| x.idx == idx);
+        if ui.checkbox(&mut inside, &ch.name).changed() {
+            act = Some(MemberAction::Move(ch.id, inside));
+        }
+    }
+    ui.separator();
+    let r = ui
+        .add_enabled(can_own, egui::Button::new("把房主交給他…"))
+        .on_hover_text("他之後可以改名、刪除頻道、移動及移出成員；你會變成一般成員")
+        .on_disabled_hover_text("只能交給用桌面版的成員（網頁版、Android 版不能當房主）");
+    if r.clicked() {
+        act = Some(MemberAction::Ask(Confirm::Transfer(idx, name.to_string())));
+    }
+    ui.separator();
+    // 危險操作：紅字、跟一般操作用分隔線隔開
+    if ui.button(RichText::new("移出房間…").color(RED)).clicked() {
+        act = Some(MemberAction::Ask(Confirm::Kick(idx, name.to_string())));
+    }
+    act
 }
 
 /// 等使用者確認的房主操作
