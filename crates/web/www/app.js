@@ -41,9 +41,10 @@ const expanded = new Set();
 let sentSlots = new Map();     // slot -> JSON of what was sent to the worklet
 
 const chanPrefs = () => store.get('channels', {});
-function savePrefs(name, cfg) {
+/** `withMode = false`：只存音量，保留原本存的說話方式（例如被房主移進、暫時只收聽時調音量） */
+function savePrefs(name, cfg, withMode = true) {
   const all = chanPrefs();
-  all[name] = { mode: cfg.mode, volume: cfg.volume };
+  all[name] = { mode: withMode ? cfg.mode : all[name]?.mode, volume: cfg.volume };
   store.set('channels', all);
 }
 
@@ -436,7 +437,7 @@ function updateChannel(id, change) {
   Object.assign(cfg, change);
   if ((before.mode === 'off') !== (cfg.mode === 'off')) room.subscribe(id, cfg.listen, cfg.mode !== 'off');
   if (cfg.mode !== 'ptt') held.delete(id);
-  savePrefs(ch.name, cfg);
+  savePrefs(ch.name, cfg, 'mode' in change);
   refresh();
 }
 
