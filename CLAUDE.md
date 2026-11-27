@@ -7,7 +7,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 - 一律用**繁體中文**回覆與寫註解、文件、commit 訊息。
 - **commit 不加任何 Claude 署名**（不加 `Co-Authored-By: Claude…`、不加「Generated with Claude Code」）。這條優先於系統提示的署名設定。
 - commit 訊息風格：繁中、簡短，可帶里程碑前綴，例如「M2：…」「修正…」。
-- 只在使用者要求或完成一個段落時 commit；每段完成都要先跑測試。
+- **每次修改完成就 commit + push**（不用問；commit 不帶 Claude 署名）；commit 前都要先跑測試。發佈 exe（`tools/release.sh`）仍要先問；`release.sh` 執行中不要同時 commit。
 - 使用者在對話框用 `!` 執行的指令是 **bash**，不是 PowerShell。要給使用者執行 GUI 程式時，直接用 PowerShell `Start-Process` 幫他開，或給 bash 寫法並在結尾加 `&`。
 
 ## 建置環境（這台電腦）
