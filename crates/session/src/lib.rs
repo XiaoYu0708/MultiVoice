@@ -34,6 +34,73 @@ pub use pipeline::{AudioOpts, ChannelCfg, JitterSummary, Shared, TalkMode};
 pub use transport::RelaySetup as Relays;
 pub use transport::WEB_CLIENT_URL;
 
+/// 遊戲中浮動顯示的一行（一位成員）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayRow {
+    pub name: String,
+    pub me: bool,
+    pub speaking: bool,
+    /// 正在哪些頻道說話（我自己：正在送出的頻道）；沒說話時是空的
+    pub channels: Vec<String>,
+}
+
+/// 遊戲中浮動顯示的內容：我在第一行，後面是跟我在同一個頻道的人
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct OverlayView {
+    pub rows: Vec<OverlayRow>,
+    /// 我沒有送出聲音（靜音或拒聽）
+    pub muted: bool,
+    pub deafened: bool,
+}
+
+/// 可以在其他執行緒讀取浮動顯示的內容（`Session` 本身不是 `Send`）
+#[derive(Clone)]
+pub struct OverlayFeed {
+    client: Client,
+    shared: Arc<Shared>,
+    my_name: String,
+}
+
+impl OverlayFeed {
+    pub fn view(&self) -> OverlayView {
+        let channel_names: HashMap<ChannelId, String> =
+            self.client.channels().into_iter().map(|c| (c.id, c.name)).collect();
+        let names = |ids: &[ChannelId]| ids.iter().filter_map(|c| channel_names.get(c).cloned()).collect::<Vec<_>>();
+        let my_idx = self.client.session_idx();
+        let subs = self.client.subscriptions();
+        let mine: Vec<ChannelId> = subs.iter().filter(|s| s.session_idx == my_idx).map(|s| s.channel).collect();
+        let speaking = self.shared.speaking(Duration::from_millis(300));
+        // 跟我在同一個頻道的人（依加入順序），加上正在說話的人（照理說一定在同一個頻道）
+        let mut others: Vec<SessionIdx> = subs
+            .iter()
+            .filter(|s| s.session_idx != my_idx && mine.contains(&s.channel))
+            .map(|s| s.session_idx)
+            .chain(speaking.iter().map(|(i, _)| *i))
+            .collect();
+        others.sort();
+        others.dedup();
+        let member_names: HashMap<SessionIdx, String> =
+            self.client.members().into_iter().map(|m| (m.session_idx, m.display_name)).collect();
+        let talking = self.shared.talking_to();
+        let mut rows = vec![OverlayRow {
+            name: self.my_name.clone(),
+            me: true,
+            speaking: !talking.is_empty(),
+            channels: names(&talking),
+        }];
+        for idx in others {
+            let via = speaking.iter().find(|(i, _)| *i == idx).map(|(_, v)| names(v));
+            rows.push(OverlayRow {
+                name: member_names.get(&idx).cloned().unwrap_or_else(|| format!("#{idx}")),
+                me: false,
+                speaking: via.is_some(),
+                channels: via.unwrap_or_default(),
+            });
+        }
+        OverlayView { rows, muted: self.shared.is_muted(), deafened: self.shared.is_deafened() }
+    }
+}
+
 /// 已連上房間，但音訊還沒啟動
 pub struct Connected {
     client: Client,
@@ -757,6 +824,11 @@ impl Session {
     /// 跨執行緒共用的即時狀態（系統匣執行緒讀取說話／靜音狀態、切換靜音用）
     pub fn shared(&self) -> Arc<Shared> {
         self.shared.clone()
+    }
+
+    /// 遊戲中浮動顯示的內容（給浮動顯示的執行緒用）
+    pub fn overlay_feed(&self) -> OverlayFeed {
+        OverlayFeed { client: self.client.clone(), shared: self.shared.clone(), my_name: self.name.clone() }
     }
 
     /// 試聽提示音（調整提示音音量時用）

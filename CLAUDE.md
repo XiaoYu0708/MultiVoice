@@ -49,7 +49,7 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 | `web` | 網頁版（瀏覽器主執行緒，wasm-bindgen）：iroh WASM + `client-core`，前端檔案在 `crates/web/www/` |
 | `web-audio` | 網頁版音訊引擎（AudioWorklet 裡跑，C ABI 不用 wasm-bindgen）：libopus（clang 編成 wasm）、RNNoise 降噪（開著時關掉瀏覽器自己的降噪）、VAD、jitter buffer、混音；強力降噪透過匯入函式 `mv.dfn` 呼叫 `web-dfn` |
 | `web-dfn` | 網頁版強力降噪（DeepFilterNet3，含權重約 5.5 MB）：獨立的 `web_dfn.wasm`。**選項已從三個版本拿掉**（聲音變悶、CPU 忙時斷斷續續），程式碼先留著不用 |
-| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔（房間的頻道 + 我在各頻道的設定；開房時可選一個自動建好頻道）、`update.rs` 檢查新版與一鍵更新、`instance.rs` 同設定檔只開一個、`crash.rs` 錯誤對話框與 OpenGL→wgpu 備援） |
+| `desktop` | egui 0.37 桌面版（`app.rs`、`settings.rs`、`style.rs`、`tray.rs` 系統匣、`presets.rs` 頻道設定檔（房間的頻道 + 我在各頻道的設定；開房時可選一個自動建好頻道）、`update.rs` 檢查新版與一鍵更新、`overlay.rs` 遊戲中浮動顯示、`instance.rs` 同設定檔只開一個、`crash.rs` 錯誤對話框與 OpenGL→wgpu 備援） |
 | `room-server` | 常駐房間（`multivoice-room-server`）：只轉發、沒有音訊，房間 ID／密鑰／端點金鑰存在 `--state` 檔，重開後邀請票不變；管理者是沒人持有的身分（沒人能換邀請、移出成員）。`deploy/` 的 Docker 服務 `room-server` 跑一個給 Play 商店審查用的房間 |
 | `cli` | 命令列版：`host` / `join <票>`，`--open-mic --volume 0 --seconds N --channel 名稱` 方便自動測試 |
 | `netprobe` | M0 網路探測工具 |
@@ -87,7 +87,9 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
 ## 使用者的產品決定
 - 快捷鍵**只做按鍵說話（每頻道 PTT）**，不做全域廣播鍵、全域靜音鍵
 - 各頻道的說話方式、頻道音量放在頻道卡片裡；房間畫面另有「音訊設定」卡片（輸出音量、降噪、門檻、提示音…），**桌面與網頁操作一致**：寬視窗在右邊側欄、預設展開，窄視窗／手機在頻道下面、預設收起（桌面版房間裡不放麥克風測試）
-- 不做置頂「誰在說話」小視窗（做過後移除）
+- **遊戲中浮動顯示**（桌面版 `overlay.rs`，類似 Discord 的遊戲內覆蓋）：置頂、滑鼠穿透、不搶焦點的透明視窗，**不注入遊戲**（反作弊）；
+  顯示我＋跟我同頻道的人，說話的人頭像亮綠框並標出頻道；設定在「音訊設定」的「遊戲中浮動顯示」（顯示時機：只在全螢幕遊戲時／一直顯示、顯示誰、位置、大小、不透明度），改設定時預覽幾秒。
+  獨佔全螢幕的遊戲蓋不上去（要用無邊框視窗）。網頁版、Android 版沒有
 - **M6 只做一部分**：不做身分組、封鎖名單、房間沉睡。已做的：
   - 「房主」＝管理者，是**開房的人**（不是負責轉發的那台；轉發者叫「轉發」，會自動換人，UI 的「讓出轉發」只換轉發者）。
     開房的人離開後沒人能管，同一台、同一個設定檔回來就恢復
@@ -122,6 +124,8 @@ Rust 遊戲語音軟體：同時收聽／同時對多個頻道說話，房主模
   加 `-Maximize` 會先把視窗最大化再截圖（檢查全螢幕排版：寬時房間分「頻道｜側欄」兩欄，網頁版 1024px 以上也是）。
   桌面版測試參數：`--profile 名稱`、`--auto-host`、`--auto-join <票>`、`--deafen`、`--auto-update`（搭配 `MULTIVOICE_TEST_VERSION=0.0.1`，找到新版就直接更新）、
   `--restarted`（自己重新啟動自己時帶：等舊程式結束，不是叫醒它）。
+  環境變數 `MULTIVOICE_TEST_OVERLAY=1` 讓遊戲中浮動顯示不管前景視窗一直顯示（PrintWindow 截不到它，要用螢幕截圖：找類別 `MultiVoiceOverlay` 的視窗範圍、`CopyFromScreen`）；
+  `MULTIVOICE_TEST_ZOOM=0.5` 縮小畫面（一次截到整個設定區；外部送滾輪訊息捲不動 egui）。
   繪製：預設 OpenGL（glow），失敗時改用 wgpu（DX12）重新啟動並在 `%APPDATA%\MultiVoice\use-wgpu` 記住；`--renderer wgpu|glow` 指定、環境變數 `MULTIVOICE_TEST_GL_FAIL=1` 模擬 OpenGL 失敗。
   啟動失敗／panic 會跳對話框並寫 `%APPDATA%\MultiVoice\error.log`（`crash.rs`）。**同一個設定檔只能開一個**，測試時多開要用不同的 `--profile`
 - 一鍵更新實測：把 exe 複製到暫存資料夾再跑（會被換成 GitHub 上的最新版），不要在 target 目錄裡直接測

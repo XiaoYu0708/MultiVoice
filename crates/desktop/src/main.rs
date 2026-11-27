@@ -5,6 +5,7 @@ mod app;
 mod crash;
 mod icon_shape;
 mod instance;
+mod overlay;
 mod presets;
 mod settings;
 mod style;
@@ -97,6 +98,10 @@ fn run(profile: &str, renderer: eframe::Renderer) -> eframe::Result {
             // 走到這裡代表視窗與繪製都建好了，之後的 panic 跟 OpenGL 無關
             crash::TRYING_GL.store(false, std::sync::atomic::Ordering::Relaxed);
             style::setup(&cc.egui_ctx);
+            // 測試：環境變數 MULTIVOICE_TEST_ZOOM=0.6 縮小畫面（截圖時一次看到整個設定區）
+            if let Some(z) = std::env::var("MULTIVOICE_TEST_ZOOM").ok().and_then(|z| z.parse::<f32>().ok()) {
+                cc.egui_ctx.set_zoom_factor(z);
+            }
             let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("無法建立 tokio runtime");
             // 系統匣需要主視窗的 HWND（藏起來／叫回來都直接用 Win32）
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -105,7 +110,8 @@ fn run(profile: &str, renderer: eframe::Renderer) -> eframe::Result {
                 _ => None,
             };
             let tray = hwnd.and_then(|h| tray::Tray::start(h, &profile));
-            Ok(Box::new(app::App::new(rt, tray)))
+            let overlay = hwnd.and_then(overlay::Overlay::start);
+            Ok(Box::new(app::App::new(rt, tray, overlay)))
         }),
     )
 }

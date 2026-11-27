@@ -42,6 +42,18 @@ pub struct Settings {
     pub last_preset: Option<String>,
     /// 開房時套用的設定檔（None = 不用，只有大廳）
     pub host_preset: Option<String>,
+    /// 遊戲中浮動顯示（誰在說話）
+    pub overlay: bool,
+    /// 浮動顯示位置："top_left" / "top_right" / "bottom_left" / "bottom_right"
+    pub overlay_corner: String,
+    /// true = 一直顯示；false = 只在全螢幕（遊戲）時
+    pub overlay_always: bool,
+    /// 只顯示正在說話的人
+    pub overlay_only_speaking: bool,
+    /// 浮動顯示的不透明度（0.3..1）
+    pub overlay_opacity: f32,
+    /// 浮動顯示的大小（0.75..1.5）
+    pub overlay_scale: f32,
     /// 舊版（v0.8.1～0.8.3）的頻道模板：讀進來後轉成設定檔，不再寫回
     #[serde(skip_serializing)]
     room_templates: Vec<crate::presets::RoomTemplate>,
@@ -70,6 +82,12 @@ impl Default for Settings {
             presets: Vec::new(),
             last_preset: None,
             host_preset: None,
+            overlay: true,
+            overlay_corner: "top_left".into(),
+            overlay_always: false,
+            overlay_only_speaking: false,
+            overlay_opacity: 0.9,
+            overlay_scale: 1.0,
             room_templates: Vec::new(),
             last_template: None,
         }
@@ -118,6 +136,17 @@ impl Settings {
         }
         if let Ok(s) = toml::to_string_pretty(self) {
             let _ = std::fs::write(p, s);
+        }
+    }
+
+    pub fn overlay_cfg(&self) -> crate::overlay::OverlayCfg {
+        crate::overlay::OverlayCfg {
+            enabled: self.overlay,
+            corner: crate::overlay::Corner::from_key(&self.overlay_corner),
+            always: self.overlay_always,
+            only_speaking: self.overlay_only_speaking,
+            opacity: self.overlay_opacity,
+            scale: self.overlay_scale,
         }
     }
 

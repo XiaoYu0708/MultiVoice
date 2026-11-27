@@ -9,6 +9,7 @@ use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkey
 
 use crate::presets;
 use crate::settings::Settings;
+use crate::overlay::{Corner, Overlay, OverlayCfg};
 use crate::tray::Tray;
 use crate::update;
 use crate::style::{self, AMBER, Ctl, GREEN, Icon, RED};
@@ -51,6 +52,10 @@ pub struct App {
     tray: Option<std::sync::Arc<Tray>>,
     /// 這次執行是否已經顯示過「仍在執行」通知
     tray_notified: bool,
+    /// 遊戲中浮動顯示（建立失敗時 None）
+    overlay: Option<std::sync::Arc<Overlay>>,
+    /// 上一幀的浮動顯示設定（改了就預覽幾秒）
+    overlay_cfg: Option<OverlayCfg>,
     /// 設定檔下拉選單目前選的名稱
     preset_sel: Option<String>,
     /// 正在輸入「另存設定檔」的名稱
@@ -98,7 +103,11 @@ enum Auto {
 
 impl App {
     /// 命令列參數（測試用）：`--profile 名稱`、`--auto-host`、`--auto-join 邀請票`、`--deafen`、`--auto-update`
-    pub fn new(rt: tokio::runtime::Runtime, tray: Option<std::sync::Arc<Tray>>) -> Self {
+    pub fn new(
+        rt: tokio::runtime::Runtime,
+        tray: Option<std::sync::Arc<Tray>>,
+        overlay: Option<std::sync::Arc<Overlay>>,
+    ) -> Self {
         let mut args = std::env::args().skip(1);
         let mut profile = "default".to_string();
         let mut auto = None;
@@ -142,6 +151,8 @@ impl App {
             confirm: None,
             tray,
             tray_notified: false,
+            overlay,
+            overlay_cfg: None,
             preset_sel: last_preset,
             preset_new: None,
             preset_msg: None,
@@ -296,6 +307,9 @@ impl App {
                 if let Some(t) = &self.tray {
                     t.set_session(Some(s.shared()));
                 }
+                if let Some(o) = &self.overlay {
+                    o.set_feed(Some(s.overlay_feed()));
+                }
                 self.channel_names.clear();
                 self.session = Some(s);
                 self.applied = Some(self.settings.audio_opts());
@@ -307,6 +321,9 @@ impl App {
     fn leave(&mut self) {
         if let Some(t) = &self.tray {
             t.set_session(None);
+        }
+        if let Some(o) = &self.overlay {
+            o.set_feed(None);
         }
         if let Some(s) = self.session.take() {
             self.rt.spawn(s.leave());
@@ -570,6 +587,11 @@ impl App {
             }
         }
 
+        if self.overlay.is_some() {
+            group_title(ui, "遊戲中浮動顯示", true);
+            self.overlay_settings(ui);
+        }
+
         group_title(ui, "其他", true);
         if self.tray.is_some() {
             style::toggle(ui, &mut self.settings.close_to_tray, "在房間中關閉視窗時縮到系統匣（不離開房間）");
@@ -588,6 +610,64 @@ impl App {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+    }
+
+    /// 浮動顯示的設定（「音訊設定」裡的一組）
+    fn overlay_settings(&mut self, ui: &mut egui::Ui) {
+        style::toggle(ui, &mut self.settings.overlay, "在遊戲畫面上顯示誰在說話");
+        if !self.settings.overlay {
+            ui.weak("類似 Discord 的遊戲內覆蓋：在螢幕角落顯示頻道裡的人，說話的人頭像亮綠框");
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label("顯示時機");
+            ui.radio_value(&mut self.settings.overlay_always, false, "只在全螢幕遊戲時");
+            ui.radio_value(&mut self.settings.overlay_always, true, "一直顯示");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("顯示誰");
+            ui.radio_value(&mut self.settings.overlay_only_speaking, false, "頻道裡的所有人");
+            ui.radio_value(&mut self.settings.overlay_only_speaking, true, "只有正在說話的人");
+        });
+        ui.horizontal(|ui| {
+            let l = ui.label("位置");
+            let cur = Corner::from_key(&self.settings.overlay_corner);
+            egui::ComboBox::from_id_salt("overlay_corner")
+                .selected_text(cur.label())
+                .show_ui(ui, |ui| {
+                    for c in Corner::ALL {
+                        if ui.selectable_label(c == cur, c.label()).clicked() {
+                            self.settings.overlay_corner = c.key().into();
+                        }
+                    }
+                })
+                .response
+                .labelled_by(l.id);
+        });
+        labeled_slider(
+            ui,
+            "大小",
+            egui::Slider::new(&mut self.settings.overlay_scale, 0.75..=1.5).step_by(0.05).custom_formatter(percent),
+        );
+        labeled_slider(
+            ui,
+            "不透明度",
+            egui::Slider::new(&mut self.settings.overlay_opacity, 0.3..=1.0).step_by(0.05).custom_formatter(percent),
+        );
+        ui.weak(
+            "改設定時會在螢幕角落預覽幾秒。不注入遊戲（不會觸發反作弊）、滑鼠可穿透；遊戲要用「無邊框視窗」或「視窗」模式才蓋得上去，「獨佔全螢幕」時看不到",
+        );
+    }
+
+    /// 把浮動顯示的設定交給浮動顯示執行緒；設定改了就預覽幾秒
+    fn sync_overlay(&mut self) {
+        let Some(o) = &self.overlay else { return };
+        let cfg = self.settings.overlay_cfg();
+        if self.overlay_cfg.is_some_and(|old| old != cfg) {
+            o.preview(&self.settings.name);
+        }
+        self.overlay_cfg = Some(cfg);
+        o.set_cfg(cfg);
     }
 
     /// 連線已結束（含被移出）：只顯示原因與回到大廳，不再顯示已經不正確的房間狀態
@@ -1619,6 +1699,7 @@ impl eframe::App for App {
         }
 
         self.handle_close(ui.ctx());
+        self.sync_overlay();
         self.feed_local_keys(ui.ctx());
         let snap = self.session.as_ref().map(|s| s.snapshot());
         if let Some(snap) = &snap {
@@ -1794,6 +1875,9 @@ impl Drop for App {
         if let Some(t) = &self.tray {
             t.set_session(None);
             t.remove();
+        }
+        if let Some(o) = &self.overlay {
+            o.set_feed(None);
         }
         if let Some(s) = self.session.take() {
             let fut = s.leave();
