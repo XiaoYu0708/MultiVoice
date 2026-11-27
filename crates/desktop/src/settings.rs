@@ -44,8 +44,9 @@ pub struct Settings {
     pub host_preset: Option<String>,
     /// 遊戲中浮動顯示（誰在說話）
     pub overlay: bool,
-    /// 浮動顯示位置："top_left" / "top_right" / "bottom_left" / "bottom_right"
-    pub overlay_corner: String,
+    /// 浮動顯示位置（螢幕比例 0..1；在右半邊是右邊緣、下半邊是底部的位置，見 overlay.rs）
+    pub overlay_x: f32,
+    pub overlay_y: f32,
     /// true = 一直顯示；false = 只在全螢幕（遊戲）時
     pub overlay_always: bool,
     /// 只顯示正在說話的人
@@ -83,7 +84,8 @@ impl Default for Settings {
             last_preset: None,
             host_preset: None,
             overlay: true,
-            overlay_corner: "top_left".into(),
+            overlay_x: crate::overlay::DEFAULT_POS.0,
+            overlay_y: crate::overlay::DEFAULT_POS.1,
             overlay_always: false,
             overlay_only_speaking: false,
             overlay_opacity: 0.9,
@@ -142,7 +144,6 @@ impl Settings {
     pub fn overlay_cfg(&self) -> crate::overlay::OverlayCfg {
         crate::overlay::OverlayCfg {
             enabled: self.overlay,
-            corner: crate::overlay::Corner::from_key(&self.overlay_corner),
             always: self.overlay_always,
             only_speaking: self.overlay_only_speaking,
             opacity: self.overlay_opacity,

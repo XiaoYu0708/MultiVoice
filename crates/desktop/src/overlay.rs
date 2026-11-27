@@ -6,8 +6,10 @@
 //! - 每個像素各自的透明度（`UpdateLayeredWindow`）：圓角、頭像圓圈都有反鋸齒；文字用 GDI 畫成灰階遮罩再自己合成
 //! - MultiVoice 主視窗在前景時隱藏（主視窗本身就看得到）；「只在全螢幕時」= 前景視窗蓋滿整個螢幕
 //! - 改設定時預覽幾秒（主視窗在前景也顯示，沒進房間時用範例內容）
+//! - 位置可以拖到任何地方：「調整位置」時暫時不穿透滑鼠、可以拖曳（右鍵結束）。
+//!   位置存成螢幕的比例；在螢幕右半邊時以右邊為準、各行靠右對齊，在下半邊時以底部為準、往上長
 //!
-//! 測試：環境變數 `MULTIVOICE_TEST_OVERLAY=1` 不管前景視窗、一直顯示
+//! 測試：環境變數 `MULTIVOICE_TEST_OVERLAY=1` 不管前景視窗、一直顯示；`=edit` 一開始就在調整位置
 
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -25,62 +27,23 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowRect,
-    HWND_TOPMOST, MSG, RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SetTimer, SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WM_TIMER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GWL_EXSTYLE, GetClassNameW, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_SIZEALL, LoadCursorW, MA_NOACTIVATE, MSG,
+    RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursor,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WNDCLASSW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-/// 放在螢幕哪個角落
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Corner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-impl Corner {
-    pub const ALL: [Corner; 4] = [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft, Corner::BottomRight];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Corner::TopLeft => "左上",
-            Corner::TopRight => "右上",
-            Corner::BottomLeft => "左下",
-            Corner::BottomRight => "右下",
-        }
-    }
-
-    /// 存進設定檔的字串
-    pub fn key(self) -> &'static str {
-        match self {
-            Corner::TopLeft => "top_left",
-            Corner::TopRight => "top_right",
-            Corner::BottomLeft => "bottom_left",
-            Corner::BottomRight => "bottom_right",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Corner {
-        Corner::ALL.into_iter().find(|c| c.key() == s).unwrap_or(Corner::TopLeft)
-    }
-
-    fn right(self) -> bool {
-        matches!(self, Corner::TopRight | Corner::BottomRight)
-    }
-
-    fn bottom(self) -> bool {
-        matches!(self, Corner::BottomLeft | Corner::BottomRight)
-    }
-}
+/// 預設位置（螢幕比例）：左上角，約離邊緣 16 px（1080p）
+pub const DEFAULT_POS: (f32, f32) = (0.008, 0.015);
 
 /// 浮動顯示的設定（UI 執行緒每一幀更新）
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverlayCfg {
     pub enabled: bool,
-    pub corner: Corner,
     /// true = 一直顯示；false = 只在前景是全螢幕程式（遊戲）時
     pub always: bool,
     /// 只顯示正在說話的人
@@ -93,7 +56,7 @@ pub struct OverlayCfg {
 
 impl Default for OverlayCfg {
     fn default() -> Self {
-        Self { enabled: false, corner: Corner::TopLeft, always: false, only_speaking: false, opacity: 0.9, scale: 1.0 }
+        Self { enabled: false, always: false, only_speaking: false, opacity: 0.9, scale: 1.0 }
     }
 }
 
@@ -101,10 +64,14 @@ impl Default for OverlayCfg {
 pub struct Overlay {
     feed: Mutex<Option<OverlayFeed>>,
     cfg: Mutex<OverlayCfg>,
-    /// 預覽到什麼時候、我的名字（沒進房間時的範例內容用）
-    preview: Mutex<Option<(Instant, String)>>,
+    /// 預覽到什麼時候、我的名字（範例內容用）
+    preview: Mutex<(Option<Instant>, String)>,
     main: AtomicIsize,
     started: AtomicBool,
+    /// 位置（螢幕比例，見檔案開頭）；拖曳時由浮動顯示執行緒更新，UI 執行緒讀回去存檔
+    pos: Mutex<(f32, f32)>,
+    /// 正在調整位置（可以拖曳）
+    editing: AtomicBool,
 }
 
 static OVERLAY: OnceLock<Arc<Overlay>> = OnceLock::new();
@@ -120,9 +87,12 @@ impl Overlay {
                 Arc::new(Overlay {
                     feed: Mutex::new(None),
                     cfg: Mutex::new(OverlayCfg::default()),
-                    preview: Mutex::new(None),
+                    preview: Mutex::new((None, String::new())),
                     main: AtomicIsize::new(main),
                     started: AtomicBool::new(false),
+                    pos: Mutex::new(DEFAULT_POS),
+                    // 測試：MULTIVOICE_TEST_OVERLAY=edit 一開始就在調整位置
+                    editing: AtomicBool::new(std::env::var("MULTIVOICE_TEST_OVERLAY").is_ok_and(|v| v == "edit")),
                 })
             })
             .clone();
@@ -142,9 +112,27 @@ impl Overlay {
         *self.cfg.lock().unwrap() = cfg;
     }
 
+    pub fn pos(&self) -> (f32, f32) {
+        *self.pos.lock().unwrap()
+    }
+
+    pub fn set_pos(&self, p: (f32, f32)) {
+        *self.pos.lock().unwrap() = (p.0.clamp(0.0, 1.0), p.1.clamp(0.0, 1.0));
+    }
+
+    /// 開始／結束調整位置
+    pub fn set_editing(&self, on: bool) {
+        self.editing.store(on, Ordering::Relaxed);
+    }
+
+    /// 是否正在調整位置（在浮動顯示上按右鍵也會結束）
+    pub fn editing(&self) -> bool {
+        self.editing.load(Ordering::Relaxed)
+    }
+
     /// 預覽幾秒（改設定時呼叫）；`my_name` 用在沒進房間時的範例內容
     pub fn preview(&self, my_name: &str) {
-        *self.preview.lock().unwrap() = Some((Instant::now() + PREVIEW, my_name.to_string()));
+        *self.preview.lock().unwrap() = (Some(Instant::now() + PREVIEW), my_name.to_string());
     }
 }
 
@@ -166,6 +154,7 @@ const SUB: Rgb = [0x94, 0xa3, 0xb8];
 const GREEN: Rgb = [34, 197, 94];
 const RED: Rgb = [244, 63, 94];
 const WHITE: Rgb = [255, 255, 255];
+const VIOLET: Rgb = [124, 58, 237];
 /// 頭像底色（依名字挑一個）
 const AVATARS: [Rgb; 8] = [
     [124, 58, 237],
@@ -199,8 +188,6 @@ const TEXT_X: f32 = ROW_H + 4.0;
 const PAD_R: f32 = 12.0;
 /// 名字和後面頻道／狀態文字之間
 const SPAN_GAP: f32 = 8.0;
-/// 離螢幕邊緣
-const MARGIN: f32 = 16.0;
 const MAX_NAME: usize = 20;
 
 /// 一行裡的一段文字
@@ -235,6 +222,11 @@ fn spans(row: &OverlayRow, view: &OverlayView) -> Vec<Span> {
 struct Frame {
     view: OverlayView,
     cfg: OverlayCfg,
+    pos: (f32, f32),
+    editing: bool,
+    /// 位置的基準（整個螢幕）
+    monitor: (i32, i32, i32, i32),
+    /// 可以放的範圍（全螢幕時整個螢幕，否則避開工作列）
     area: (i32, i32, i32, i32),
     dpi: u32,
 }
@@ -243,11 +235,53 @@ struct Local {
     last: Option<Frame>,
     visible: bool,
     last_top: Instant,
+    /// 目前視窗是不是可以拖曳（沒有 WS_EX_TRANSPARENT）
+    grabbable: bool,
+    /// 拖曳中：(按下時的游標位置, 按下時的視窗左上角)
+    drag: Option<(POINT, POINT)>,
 }
 
 thread_local! {
-    static LOCAL: std::cell::RefCell<Local> =
-        std::cell::RefCell::new(Local { last: None, visible: false, last_top: Instant::now() });
+    static LOCAL: std::cell::RefCell<Local> = std::cell::RefCell::new(Local {
+        last: None,
+        visible: false,
+        last_top: Instant::now(),
+        grabbable: false,
+        drag: None,
+    });
+}
+
+fn rect_tuple(r: RECT) -> (i32, i32, i32, i32) {
+    (r.left, r.top, r.right, r.bottom)
+}
+
+unsafe fn monitor_rect(mon: HMONITOR) -> MONITORINFO {
+    let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    unsafe { GetMonitorInfoW(mon, &mut mi) };
+    mi
+}
+
+/// 視窗目前的位置換成螢幕比例（拖曳時用）：中心在左半邊記左邊緣、右半邊記右邊緣；上下同理
+unsafe fn pos_of(hwnd: HWND) -> (f32, f32) {
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let m = unsafe {
+        GetWindowRect(hwnd, &mut r);
+        monitor_rect(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)).rcMonitor
+    };
+    let (mw, mh) = ((m.right - m.left).max(1) as f32, (m.bottom - m.top).max(1) as f32);
+    let x = if r.left + r.right < m.left + m.right { r.left } else { r.right };
+    let y = if r.top + r.bottom < m.top + m.bottom { r.top } else { r.bottom };
+    (((x - m.left) as f32 / mw).clamp(0.0, 1.0), ((y - m.top) as f32 / mh).clamp(0.0, 1.0))
+}
+
+/// 調整位置時可以點、可以拖；平常滑鼠穿透
+unsafe fn set_grabbable(hwnd: HWND, on: bool) {
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let t = WS_EX_TRANSPARENT as isize;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, if on { ex & !t } else { ex | t });
+    }
 }
 
 fn test_mode() -> bool {
@@ -281,19 +315,35 @@ unsafe fn is_fullscreen(fg: HWND, mon: HMONITOR) -> bool {
 unsafe fn tick(hwnd: HWND) {
     let o = overlay();
     let cfg = *o.cfg.lock().unwrap();
-    let preview = {
+    let (preview, my_name) = {
         let mut p = o.preview.lock().unwrap();
-        if p.as_ref().is_some_and(|(t, _)| Instant::now() >= *t) {
-            *p = None;
+        if p.0.is_some_and(|t| Instant::now() >= t) {
+            p.0 = None;
         }
-        p.as_ref().map(|(_, n)| n.clone())
+        (p.0.is_some(), p.1.clone())
     };
+    let editing = cfg.enabled && o.editing();
+    if !cfg.enabled {
+        o.set_editing(false);
+    }
+    let grabbable = LOCAL.with(|l| l.borrow().grabbable);
+    if grabbable != editing {
+        unsafe { set_grabbable(hwnd, editing) };
+        LOCAL.with(|l| {
+            let mut l = l.borrow_mut();
+            l.grabbable = editing;
+            if !editing && l.drag.take().is_some() {
+                unsafe { ReleaseCapture() };
+            }
+        });
+    }
     let fg = unsafe { GetForegroundWindow() };
-    let mon = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) };
+    // 調整位置時用浮動顯示自己所在的螢幕（可以拖到別的螢幕）；平常用前景視窗（遊戲）的螢幕
+    let mon = unsafe { MonitorFromWindow(if editing { hwnd } else { fg }, MONITOR_DEFAULTTONEAREST) };
     let full = unsafe { is_fullscreen(fg, mon) };
     let main = o.main.load(Ordering::Relaxed) as HWND;
-    let previewing = cfg.enabled && preview.is_some();
-    let show = previewing || test_mode() || (cfg.enabled && fg != main && (cfg.always || full));
+    let previewing = cfg.enabled && preview;
+    let show = editing || previewing || test_mode() || (cfg.enabled && fg != main && (cfg.always || full));
 
     let feed = o.feed.lock().unwrap().clone();
     let mut view = match &feed {
@@ -303,8 +353,8 @@ unsafe fn tick(hwnd: HWND) {
     if cfg.only_speaking {
         view.rows.retain(|r| r.speaking);
     }
-    if previewing && view.rows.is_empty() {
-        view = sample(preview.as_deref().unwrap_or("我"));
+    if (previewing || editing) && view.rows.is_empty() {
+        view = sample(if my_name.is_empty() { "我" } else { &my_name });
     }
     if !show || view.rows.is_empty() {
         LOCAL.with(|l| {
@@ -318,14 +368,20 @@ unsafe fn tick(hwnd: HWND) {
         return;
     }
 
-    let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
-    mi.cbSize = size_of::<MONITORINFO>() as u32;
-    unsafe { GetMonitorInfoW(mon, &mut mi) };
+    let mi = unsafe { monitor_rect(mon) };
     // 全螢幕遊戲時工作列被蓋住，用整個螢幕；否則避開工作列
     let r = if full { mi.rcMonitor } else { mi.rcWork };
     let (mut dx, mut dy) = (96u32, 96u32);
     unsafe { GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) };
-    let frame = Frame { view, cfg, area: (r.left, r.top, r.right, r.bottom), dpi: dx.max(96) };
+    let frame = Frame {
+        view,
+        cfg,
+        pos: o.pos(),
+        editing,
+        monitor: rect_tuple(mi.rcMonitor),
+        area: rect_tuple(r),
+        dpi: dx.max(96),
+    };
 
     let (changed, was_visible, top_due) = LOCAL.with(|l| {
         let l = l.borrow();
@@ -525,65 +581,83 @@ unsafe fn make_font(px: f32, weight: u32) -> HFONT {
     }
 }
 
+/// 一行：成員（有頭像）或調整位置時最上面的提示
+struct Line<'a> {
+    row: Option<&'a OverlayRow>,
+    spans: Vec<Span>,
+    sizes: Vec<SIZE>,
+    width: i32,
+}
+
 /// 畫好整個浮動顯示，並更新視窗的位置、大小、內容
 unsafe fn render(hwnd: HWND, f: &Frame) {
     let s = f.dpi as f32 / 96.0 * f.cfg.scale.clamp(0.5, 2.0);
     unsafe {
         let screen = GetDC(null_mut());
         let fonts = [make_font(15.0 * s, FW_SEMIBOLD), make_font(13.0 * s, FW_NORMAL), make_font(13.0 * s, FW_BOLD)];
+        let gap = (SPAN_GAP * s) as i32;
+        let mut lines: Vec<Line> = Vec::new();
+        if f.editing {
+            let spans = vec![Span { text: wide("拖曳移動　右鍵完成"), font: F_INITIAL, color: WHITE }];
+            let sizes: Vec<SIZE> = spans.iter().map(|x| measure(screen, fonts[x.font], &x.text)).collect();
+            let width = (PAD_R * 2.0 * s) as i32 + sizes[0].cx;
+            lines.push(Line { row: None, spans, sizes, width });
+        }
         // 先量每一行的寬度
-        let rows: Vec<(Vec<Span>, Vec<SIZE>)> = f
-            .view
-            .rows
-            .iter()
-            .map(|r| {
-                let sp = spans(r, &f.view);
-                let sizes = sp.iter().map(|x| measure(screen, fonts[x.font], &x.text)).collect();
-                (sp, sizes)
-            })
-            .collect();
-        let widths: Vec<i32> = rows
-            .iter()
-            .map(|(_, sizes)| {
-                let t: i32 = sizes.iter().map(|z| z.cx).sum::<i32>() + (SPAN_GAP * s) as i32 * (sizes.len() as i32 - 1);
-                ((TEXT_X + PAD_R) * s) as i32 + t
-            })
-            .collect();
-        let w = widths.iter().copied().max().unwrap_or(1).max(1);
-        let n = rows.len() as f32;
+        for r in &f.view.rows {
+            let spans = spans(r, &f.view);
+            let sizes: Vec<SIZE> = spans.iter().map(|x| measure(screen, fonts[x.font], &x.text)).collect();
+            let t = sizes.iter().map(|z| z.cx).sum::<i32>() + gap * (sizes.len() as i32 - 1);
+            lines.push(Line { row: Some(r), spans, sizes, width: ((TEXT_X + PAD_R) * s) as i32 + t });
+        }
+        let w = lines.iter().map(|l| l.width).max().unwrap_or(1).max(1);
+        let n = lines.len() as f32;
         let h = ((ROW_H * n + ROW_GAP * (n - 1.0)) * s).ceil() as i32;
+        // 在螢幕右半邊：以右邊為準、每一行靠右對齊；下半邊：以底部為準（人多時往上長）
+        let right = f.pos.0 >= 0.5;
+        let bottom = f.pos.1 >= 0.5;
 
         if let (Some(mut d), Some(mut scratch)) = (Dib::new(screen, w, h), Dib::new(screen, w, h)) {
-            let right = f.cfg.corner.right();
-            for (i, ((sp, sizes), &rw)) in rows.iter().zip(&widths).enumerate() {
+            for (i, line) in lines.iter().enumerate() {
                 let y0 = (ROW_H + ROW_GAP) * s * i as f32;
                 let y1 = y0 + ROW_H * s;
-                // 靠右的角落：每一行也靠右對齊
-                let x0 = if right { (w - rw) as f32 } else { 0.0 };
-                let row = &f.view.rows[i];
-                pill(&mut d, x0, y0, x0 + rw as f32, y1, BG, if row.speaking { 0.88 } else { 0.68 });
-                let (cx, cy) = (x0 + ROW_H * s / 2.0, y0 + ROW_H * s / 2.0);
-                if row.speaking {
-                    circle(&mut d, cx, cy, RING_R * s, GREEN, 1.0);
-                    circle(&mut d, cx, cy, (AVATAR_R + 0.5) * s, BG, 1.0);
-                }
-                let av = if row.speaking { AVATAR_R - 0.5 } else { AVATAR_R };
-                circle(&mut d, cx, cy, av * s, avatar_color(&row.name), if row.speaking { 1.0 } else { 0.8 });
-                let ini = wide(&initial(&row.name));
-                let isz = measure(screen, fonts[F_INITIAL], &ini);
-                text(&mut d, &mut scratch, fonts[F_INITIAL], &ini, (cx - isz.cx as f32 / 2.0).round() as i32, (cy - isz.cy as f32 / 2.0).round() as i32, isz, WHITE);
-                let mut x = (x0 + TEXT_X * s) as i32;
-                for (span, sz) in sp.iter().zip(sizes) {
+                let x0 = if right { (w - line.width) as f32 } else { 0.0 };
+                let cy = y0 + ROW_H * s / 2.0;
+                let mut x = match line.row {
+                    None => {
+                        pill(&mut d, x0, y0, x0 + line.width as f32, y1, VIOLET, 0.95);
+                        (x0 + PAD_R * s) as i32
+                    }
+                    Some(row) => {
+                        pill(&mut d, x0, y0, x0 + line.width as f32, y1, BG, if row.speaking { 0.88 } else { 0.68 });
+                        let cx = x0 + ROW_H * s / 2.0;
+                        if row.speaking {
+                            circle(&mut d, cx, cy, RING_R * s, GREEN, 1.0);
+                            circle(&mut d, cx, cy, (AVATAR_R + 0.5) * s, BG, 1.0);
+                        }
+                        let av = if row.speaking { AVATAR_R - 0.5 } else { AVATAR_R };
+                        circle(&mut d, cx, cy, av * s, avatar_color(&row.name), if row.speaking { 1.0 } else { 0.8 });
+                        let ini = wide(&initial(&row.name));
+                        let isz = measure(screen, fonts[F_INITIAL], &ini);
+                        let (ix, iy) = ((cx - isz.cx as f32 / 2.0).round() as i32, (cy - isz.cy as f32 / 2.0).round() as i32);
+                        text(&mut d, &mut scratch, fonts[F_INITIAL], &ini, ix, iy, isz, WHITE);
+                        (x0 + TEXT_X * s) as i32
+                    }
+                };
+                for (span, sz) in line.spans.iter().zip(&line.sizes) {
                     let ty = (cy - sz.cy as f32 / 2.0).round() as i32;
                     text(&mut d, &mut scratch, fonts[span.font], &span.text, x, ty, *sz, span.color);
-                    x += sz.cx + (SPAN_GAP * s) as i32;
+                    x += sz.cx + gap;
                 }
             }
 
+            // 位置：螢幕比例 → 像素，再限制在可以放的範圍內（不會跑出螢幕、全螢幕以外不蓋工作列）
+            let (ml, mt, mr, mb) = f.monitor;
+            let ax = ml + ((mr - ml) as f32 * f.pos.0).round() as i32;
+            let ay = mt + ((mb - mt) as f32 * f.pos.1).round() as i32;
             let (l, t, r, b) = f.area;
-            let m = (MARGIN * s) as i32;
-            let x = if right { r - m - w } else { l + m };
-            let y = if f.cfg.corner.bottom() { b - m - h } else { t + m };
+            let x = (if right { ax - w } else { ax }).min(r - w).max(l);
+            let y = (if bottom { ay - h } else { ay }).min(b - h).max(t);
             let blendf = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as u8,
                 BlendFlags: 0,
@@ -602,9 +676,46 @@ unsafe fn render(hwnd: HWND, f: &Frame) {
     }
 }
 
+/// 調整位置：左鍵拖曳、右鍵結束（只有調整位置時視窗才收得到滑鼠）
+unsafe fn mouse(hwnd: HWND, msg: u32) {
+    let mut cur = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut cur) };
+    match msg {
+        WM_LBUTTONDOWN => {
+            let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            unsafe {
+                GetWindowRect(hwnd, &mut r);
+                SetCapture(hwnd);
+            }
+            LOCAL.with(|l| l.borrow_mut().drag = Some((cur, POINT { x: r.left, y: r.top })));
+        }
+        WM_MOUSEMOVE | WM_LBUTTONUP => {
+            let Some((start, win)) = LOCAL.with(|l| l.borrow().drag) else { return };
+            unsafe {
+                let (x, y) = (win.x + cur.x - start.x, win.y + cur.y - start.y);
+                SetWindowPos(hwnd, null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                overlay().set_pos(pos_of(hwnd));
+            }
+            if msg == WM_LBUTTONUP {
+                LOCAL.with(|l| l.borrow_mut().drag = None);
+                unsafe { ReleaseCapture() };
+            }
+        }
+        WM_RBUTTONUP => overlay().set_editing(false),
+        _ => {}
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_TIMER => unsafe { tick(hwnd) },
+        WM_LBUTTONDOWN | WM_MOUSEMOVE | WM_LBUTTONUP | WM_RBUTTONUP => unsafe { mouse(hwnd, msg) },
+        // 點它不會搶走焦點
+        WM_MOUSEACTIVATE => return MA_NOACTIVATE as LRESULT,
+        WM_SETCURSOR => unsafe {
+            SetCursor(LoadCursorW(null_mut(), IDC_SIZEALL));
+            return 1;
+        },
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
     0

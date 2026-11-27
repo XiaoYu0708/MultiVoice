@@ -9,7 +9,7 @@ use session::{ChannelCfg, Connected, Relays, Session, Snapshot, TalkMode, hotkey
 
 use crate::presets;
 use crate::settings::Settings;
-use crate::overlay::{Corner, Overlay, OverlayCfg};
+use crate::overlay::{Overlay, OverlayCfg};
 use crate::tray::Tray;
 use crate::update;
 use crate::style::{self, AMBER, Ctl, GREEN, Icon, RED};
@@ -125,6 +125,9 @@ impl App {
         }
         let settings = Settings::load(&profile);
         let last_preset = settings.last_preset.clone();
+        if let Some(o) = &overlay {
+            o.set_pos((settings.overlay_x, settings.overlay_y));
+        }
         Self {
             auto,
             start_deafened,
@@ -629,21 +632,27 @@ impl App {
             ui.radio_value(&mut self.settings.overlay_only_speaking, false, "頻道裡的所有人");
             ui.radio_value(&mut self.settings.overlay_only_speaking, true, "只有正在說話的人");
         });
-        ui.horizontal(|ui| {
-            let l = ui.label("位置");
-            let cur = Corner::from_key(&self.settings.overlay_corner);
-            egui::ComboBox::from_id_salt("overlay_corner")
-                .selected_text(cur.label())
-                .show_ui(ui, |ui| {
-                    for c in Corner::ALL {
-                        if ui.selectable_label(c == cur, c.label()).clicked() {
-                            self.settings.overlay_corner = c.key().into();
-                        }
+        if let Some(o) = &self.overlay {
+            let editing = o.editing();
+            ui.horizontal(|ui| {
+                ui.label("位置");
+                if editing {
+                    if style::primary_button(ui, true, "完成", egui::vec2(64.0, 24.0)).clicked() {
+                        o.set_editing(false);
                     }
-                })
-                .response
-                .labelled_by(l.id);
-        });
+                } else if ui.button("調整位置…").clicked() {
+                    o.set_editing(true);
+                    o.preview(&self.settings.name);
+                }
+                if ui.small_button("回到左上角").clicked() {
+                    o.set_pos(crate::overlay::DEFAULT_POS);
+                    o.preview(&self.settings.name);
+                }
+            });
+            if editing {
+                ui.colored_label(AMBER, "用滑鼠把螢幕上的浮動顯示拖到想要的位置（也可以拖到別的螢幕），在它上面按右鍵或按「完成」結束");
+            }
+        }
         labeled_slider(
             ui,
             "大小",
@@ -662,6 +671,10 @@ impl App {
     /// 把浮動顯示的設定交給浮動顯示執行緒；設定改了就預覽幾秒
     fn sync_overlay(&mut self) {
         let Some(o) = &self.overlay else { return };
+        // 位置由浮動顯示執行緒更新（拖曳），這裡讀回來存檔
+        let (x, y) = o.pos();
+        self.settings.overlay_x = x;
+        self.settings.overlay_y = y;
         let cfg = self.settings.overlay_cfg();
         if self.overlay_cfg.is_some_and(|old| old != cfg) {
             o.preview(&self.settings.name);
@@ -1759,7 +1772,8 @@ impl eframe::App for App {
         if !self.mic_test_shown {
             self.mic_test = None;
         }
-        if self.recording.is_some() || self.mic_test.is_some() || self.install.is_some() {
+        let overlay_editing = self.overlay.as_ref().is_some_and(|o| o.editing());
+        if self.recording.is_some() || self.mic_test.is_some() || self.install.is_some() || overlay_editing {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         } else if self.session.is_some() || self.pending.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(80));
