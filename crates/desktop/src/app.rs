@@ -1462,8 +1462,7 @@ impl App {
                                 // 房主可以把名字拖到別的頻道（移過去）或頻道外面（移出這個頻道）
                                 let r = if is_owner {
                                     let payload = DragMember { idx: m.idx, from: Some(ch.id) };
-                                    ui.dnd_drag_source(egui::Id::unique(("drag-member", ch.id, m.idx)), payload, |ui| ui.add(label))
-                                        .inner
+                                    drag_source_clickable(ui, egui::Id::unique(("drag-member", ch.id, m.idx)), payload, label)
                                 } else {
                                     ui.add(label)
                                 }
@@ -1789,6 +1788,15 @@ impl eframe::App for App {
 struct DragMember {
     idx: u16,
     from: Option<ChannelId>,
+}
+
+/// 可拖動、也能點擊／右鍵的名字。`dnd_drag_source` 會在內容上蓋一層只感應拖曳的區塊，
+/// egui 的命中判定遇到「上層只收拖曳」會把下層的點擊（含右鍵選單）吃掉；
+/// 所以再疊一層只收點擊的區塊在最上面（點擊在上、拖曳在下時兩個都會收到）
+fn drag_source_clickable(ui: &mut egui::Ui, id: egui::Id, payload: DragMember, label: egui::Label) -> egui::Response {
+    let r = ui.dnd_drag_source(id, payload, |ui| ui.add(label)).response;
+    let click = ui.interact(r.rect, id.with("click"), egui::Sense::click());
+    click | r
 }
 
 /// 把拖過來的成員放到頻道 `ch`：從別的頻道拖來的先移出原頻道，還沒在 `ch` 就移進（只收聽）
