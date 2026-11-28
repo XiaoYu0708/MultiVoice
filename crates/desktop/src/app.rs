@@ -1792,11 +1792,11 @@ struct DragMember {
 
 /// 可拖動、也能點擊／右鍵的名字。`dnd_drag_source` 會在內容上蓋一層只感應拖曳的區塊，
 /// egui 的命中判定遇到「上層只收拖曳」會把下層的點擊（含右鍵選單）吃掉；
-/// 所以再疊一層只收點擊的區塊在最上面（點擊在上、拖曳在下時兩個都會收到）
+/// 所以再疊一層只收點擊的區塊在最上面（點擊在上、拖曳在下時兩個都會收到）。
+/// 只回傳點擊層的 Response（拖動中名字畫在另一個圖層，不能和它合併）
 fn drag_source_clickable(ui: &mut egui::Ui, id: egui::Id, payload: DragMember, label: egui::Label) -> egui::Response {
-    let r = ui.dnd_drag_source(id, payload, |ui| ui.add(label)).response;
-    let click = ui.interact(r.rect, id.with("click"), egui::Sense::click());
-    click | r
+    let rect = ui.dnd_drag_source(id, payload, |ui| ui.add(label)).response.rect;
+    ui.interact(rect, id.with("click"), egui::Sense::click())
 }
 
 /// 把拖過來的成員放到頻道 `ch`：從別的頻道拖來的先移出原頻道，還沒在 `ch` 就移進（只收聽）
@@ -1985,5 +1985,54 @@ mod volume_tests {
         }
         assert_eq!(pct(1.0), "100%");
         assert_eq!(pct(10.0), "1000%");
+    }
+}
+
+#[cfg(test)]
+mod drag_click_tests {
+    use super::*;
+    use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
+
+    /// 跑一個畫面：畫一個可拖動的名字，回傳 (名字的 Response 是否右鍵點到, 名字範圍, 是否正在拖)
+    fn frame(ctx: &egui::Context, events: Vec<Event>) -> (bool, Rect, bool) {
+        let id = egui::Id::new("drag-test");
+        let mut out = (false, Rect::NOTHING, false);
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            events,
+            ..Default::default()
+        };
+        let mut o = ctx.run_ui(input, |ui| {
+            let label = egui::Label::new("某人").sense(egui::Sense::click());
+            let r = drag_source_clickable(ui, id, DragMember { idx: 1, from: None }, label);
+            out = (r.secondary_clicked(), r.rect, ui.ctx().is_being_dragged(id));
+        });
+        o.textures_delta.clear();
+        out
+    }
+
+    fn button(pos: Pos2, b: PointerButton, pressed: bool) -> Event {
+        Event::PointerButton { pos, button: b, pressed, modifiers: Modifiers::NONE }
+    }
+
+    /// 房主的名字可以拖動，也要能按右鍵（調整音量）；dnd_drag_source 曾經把右鍵吃掉
+    #[test]
+    fn right_click_and_drag_both_work() {
+        let ctx = egui::Context::default();
+        let (_, rect, _) = frame(&ctx, vec![]);
+        let c = rect.center();
+        frame(&ctx, vec![Event::PointerMoved(c)]);
+        frame(&ctx, vec![button(c, PointerButton::Secondary, true)]);
+        let (right, _, _) = frame(&ctx, vec![button(c, PointerButton::Secondary, false)]);
+        assert!(right, "右鍵沒有點到名字");
+
+        // 左鍵按住移動：要開始拖
+        frame(&ctx, vec![button(c, PointerButton::Primary, true)]);
+        let mut dragging = false;
+        for i in 1..=5 {
+            let (_, _, d) = frame(&ctx, vec![Event::PointerMoved(c + Vec2::new(10.0 * i as f32, 10.0 * i as f32))]);
+            dragging |= d;
+        }
+        assert!(dragging, "按住移動沒有開始拖");
     }
 }
